@@ -12,6 +12,7 @@ Paste your trip notes (hotels, restaurants, sights, day by day) and get back a s
 - **Place photos** — Wikipedia thumbnail in every popup, click to enlarge
 - **Rich popups** — highlights, practical tips, cuisine type, price range, hotel star rating and amenities
 - **📋 Itinerary panel** — floating button opens a full side panel with the complete trip description day by day, including all stops, tips, distances and accommodation details
+- **Google Maps base layer** — road map by default, switchable to Google Satellite in the layer control
 - **Auto-zoom** — map fits exactly to the travel area (no whole-continent view)
 - **Country-aware geocoding** — locations restricted to the correct country, preventing wrong-country matches
 - **Region & country** displayed in the legend
@@ -82,7 +83,7 @@ See [example_trip.txt](example_trip.txt) for a sample 7-day Japan itinerary.
 
 | Control | Description |
 |---|---|
-| 📋 Itinerary | Opens full trip description panel (top-right button) |
+| 📋 Itinerary | Opens full trip description panel (left side button, below zoom controls) |
 | Layer control | Toggle individual days and accommodation layer on/off |
 | Legend | Shows trip name, region, day colours and marker types |
 | Marker click | Opens popup with photo, description, highlights, tips and distance to next stop |
