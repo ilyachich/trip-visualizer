@@ -592,7 +592,7 @@ def build_itinerary_panel(data: dict) -> str:
          onclick="document.getElementById('itin-panel').style.display='flex';
                   document.getElementById('itin-btn').style.display='none'"
          title="Show full itinerary"
-         style="position:fixed;top:80px;right:10px;z-index:9999;
+         style="position:fixed;top:90px;left:10px;z-index:9999;
                 background:#2c3e50;color:white;border-radius:6px;
                 padding:8px 12px;cursor:pointer;font-size:13px;
                 box-shadow:2px 2px 6px rgba(0,0,0,.35);
