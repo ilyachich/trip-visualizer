@@ -53,14 +53,37 @@ DAY_COLORS = [
     "#B7950B",  # gold
 ]
 
-# Glyphicon names work without external CDN; FA-4 names also supported with prefix='fa'
+# All icons use Font Awesome 4 (prefix='fa') — bundled with Folium, no CDN needed
 TYPE_CONFIG: dict[str, dict] = {
-    "hotel":      {"icon": "home",         "color": "darkblue",  "prefix": "glyphicon"},
-    "restaurant": {"icon": "cutlery",      "color": "red",       "prefix": "glyphicon"},
-    "activity":   {"icon": "camera",       "color": "green",     "prefix": "glyphicon"},
-    "poi":        {"icon": "star",         "color": "orange",    "prefix": "glyphicon"},
-    "transport":  {"icon": "plane",        "color": "gray",      "prefix": "glyphicon"},
-    "default":    {"icon": "info-sign",    "color": "cadetblue", "prefix": "glyphicon"},
+    "hotel":      {"icon": "bed",         "color": "darkblue", "prefix": "fa"},
+    "restaurant": {"icon": "cutlery",     "color": "red",      "prefix": "fa"},
+    "activity":   {"icon": "camera",      "color": "green",    "prefix": "fa"},
+    "poi":        {"icon": "map-marker",  "color": "orange",   "prefix": "fa"},
+    "transport":  {"icon": "train",       "color": "gray",     "prefix": "fa"},
+    "default":    {"icon": "info-circle", "color": "cadetblue","prefix": "fa"},
+}
+
+# Per-mode icon override for transport locations
+TRANSPORT_MODE_CONFIG: dict[str, dict] = {
+    "plane":    {"icon": "plane",   "color": "darkgray"},
+    "train":    {"icon": "train",   "color": "gray"},
+    "bus":      {"icon": "bus",     "color": "gray"},
+    "metro":    {"icon": "subway",  "color": "darkpurple"},
+    "ship":     {"icon": "ship",    "color": "darkblue"},
+    "taxi":     {"icon": "taxi",    "color": "orange"},
+    "car":      {"icon": "car",     "color": "gray"},
+    "bicycle":  {"icon": "bicycle", "color": "green"},
+}
+
+TRANSPORT_MODE_EMOJI: dict[str, str] = {
+    "plane":   "✈️",
+    "train":   "🚂",
+    "bus":     "🚌",
+    "metro":   "🚇",
+    "ship":    "🚢",
+    "taxi":    "🚕",
+    "car":     "🚗",
+    "bicycle": "🚲",
 }
 
 TYPE_EMOJI = {
@@ -68,7 +91,7 @@ TYPE_EMOJI = {
     "restaurant": "🍽️",
     "activity":   "🎯",
     "poi":        "📍",
-    "transport":  "✈️",
+    "transport":  "🚆",
     "default":    "📌",
 }
 
@@ -93,6 +116,7 @@ Schema:
         {
           "name": "Location Name",
           "type": "hotel|restaurant|activity|poi|transport",
+          "transport_mode": "plane|train|bus|metro|ship|taxi|car|bicycle — only set when type=transport, else null",
           "description": "one-sentence description",
           "highlights": "2-3 key facts or highlights, comma-separated (null if none)",
           "tips": "one practical tip: opening hours, booking advice, best time to visit (null if none)",
@@ -124,6 +148,9 @@ Rules:
 - `order` is the chronological visit order within a day (1, 2, 3 …).
 - Types: hotel=accommodation, restaurant=dining, activity=tours/experiences,
          poi=sight/landmark, transport=airport/station/transit hub.
+- transport_mode: set for every transport entry — plane=airport/flight,
+  train=railway/shinkansen, bus=bus station, metro=subway/underground,
+  ship=ferry/cruise, taxi=taxi, car=rental car, bicycle=bike.
 - If a hotel appears in the daily itinerary keep it there too (so the day
   route is complete), but also list it in accommodations.
 - Use your knowledge to fill in highlights, tips, cuisine, stars etc. even if
@@ -508,6 +535,12 @@ def build_map(data: dict) -> folium.Map:
             loc_type  = loc.get("type", "default")
             cfg       = TYPE_CONFIG.get(loc_type, TYPE_CONFIG["default"])
             emoji     = TYPE_EMOJI.get(loc_type, TYPE_EMOJI["default"])
+            # For transport, override icon and emoji based on transport_mode
+            if loc_type == "transport":
+                mode = (loc.get("transport_mode") or "train").lower()
+                mode_cfg = TRANSPORT_MODE_CONFIG.get(mode, TRANSPORT_MODE_CONFIG["train"])
+                cfg   = {"icon": mode_cfg["icon"], "color": mode_cfg["color"], "prefix": "fa"}
+                emoji = TRANSPORT_MODE_EMOJI.get(mode, "🚆")
             route_nxt = loc.get("_route_to_next")
 
             if route_nxt:
