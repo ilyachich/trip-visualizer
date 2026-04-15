@@ -26,6 +26,7 @@ Or pass it:   python trip_visualizer.py trip.txt --api-key YOUR_KEY
 from __future__ import annotations
 
 import argparse
+import html as html_lib
 import json
 import re
 import sys
@@ -483,6 +484,151 @@ def _popup_html(
     return folium.Popup(html, max_width=320)
 
 
+def _e(text: str | None) -> str:
+    """HTML-escape a string safely."""
+    return html_lib.escape(str(text or ""))
+
+
+def build_itinerary_panel(data: dict) -> str:
+    """Return the full HTML/CSS/JS for the itinerary side panel and toggle button."""
+
+    trip_name    = _e(data.get("trip_name", "Trip"))
+    country      = _e(data.get("country", ""))
+    region       = _e(data.get("region", ""))
+    location_line = ", ".join(filter(None, [region, country]))
+
+    # ── Accommodations section ────────────────────────────────────────────
+    acc_items = ""
+    for acc in data.get("accommodations", []):
+        stars    = int(acc.get("stars") or 0)
+        stars_s  = ("★" * stars + "☆" * (5 - stars)) if stars else ""
+        amenities = _e(acc.get("amenities") or "")
+        ci = acc.get("check_in_day", "?")
+        co = acc.get("check_out_day", "?")
+        acc_items += f"""
+        <div style="padding:8px 0;border-bottom:1px solid #f0f0f0">
+          <div style="font-weight:bold">🏨 {_e(acc['name'])}
+            <span style="color:#f0a500;font-size:11px;margin-left:4px">{stars_s}</span>
+          </div>
+          <div style="font-size:11px;color:#888">Check-in Day {ci} · Check-out Day {co}</div>
+          <div style="font-size:12px;color:#555;margin-top:2px">{_e(acc.get('description',''))}</div>
+          {"<div style='font-size:11px;color:#888;margin-top:2px'>🏷 " + amenities + "</div>" if amenities else ""}
+        </div>"""
+
+    acc_section = f"""
+    <div style="margin-bottom:16px">
+      <div style="font-weight:bold;font-size:13px;margin-bottom:6px;
+                  padding-bottom:4px;border-bottom:2px solid #2c3e50">🏨 Accommodations</div>
+      {acc_items if acc_items else '<div style="color:#aaa;font-size:12px">None listed</div>'}
+    </div>""" if data.get("accommodations") else ""
+
+    # ── Day sections ──────────────────────────────────────────────────────
+    days_html = ""
+    for i, day in enumerate(data.get("days", [])):
+        color     = DAY_COLORS[i % len(DAY_COLORS)]
+        day_label = _e(day.get("label") or f"Day {day['day_number']}")
+        date_s    = _e(day.get("date") or "")
+
+        locs_html = ""
+        for loc in sorted(day.get("locations", []), key=lambda x: x.get("order", 99)):
+            loc_type = loc.get("type", "default")
+            if loc_type == "transport":
+                mode  = (loc.get("transport_mode") or "train").lower()
+                emoji = TRANSPORT_MODE_EMOJI.get(mode, "🚆")
+            else:
+                emoji = TYPE_EMOJI.get(loc_type, TYPE_EMOJI["default"])
+
+            highlights = _e(loc.get("highlights") or "")
+            tips       = _e(loc.get("tips") or "")
+            cuisine    = _e(loc.get("cuisine") or "")
+            price      = _e(loc.get("price_range") or "")
+            route      = loc.get("_route_to_next")
+
+            cuisine_line = ""
+            if cuisine:
+                cuisine_line = f'<span style="color:#888">🍴 {cuisine}'
+                if price:
+                    cuisine_line += f" · {price}"
+                cuisine_line += "</span>"
+
+            route_line = ""
+            if route:
+                next_n = _e(route.get("next_name", "next stop"))
+                km     = route["km"]
+                mins   = route["drive_mins"]
+                if km < 1.5:
+                    travel = f"🚶 {round(km/0.08)} min walk"
+                else:
+                    travel = f"🚗 {mins} min · 🚇 ~{round(mins*1.35)} min"
+                route_line = (
+                    f'<div style="font-size:11px;color:#999;margin-top:3px">'
+                    f'→ To {next_n}: {km} km | {travel}</div>'
+                )
+
+            locs_html += f"""
+            <div style="padding:7px 0 7px 10px;border-left:3px solid {color};
+                        margin-bottom:6px;background:#fafafa;border-radius:0 4px 4px 0">
+              <div style="font-weight:600;font-size:13px">{emoji} {_e(loc['name'])}</div>
+              <div style="font-size:12px;color:#555;margin-top:2px">{_e(loc.get('description',''))}</div>
+              {"<div style='font-size:11px;color:#2c7;margin-top:3px'>✨ " + highlights + "</div>" if highlights else ""}
+              {"<div style='font-size:11px;color:#27ae60;margin-top:2px'>💡 " + tips + "</div>" if tips else ""}
+              {"<div style='font-size:11px;margin-top:2px'>" + cuisine_line + "</div>" if cuisine_line else ""}
+              {route_line}
+            </div>"""
+
+        days_html += f"""
+        <div style="margin-bottom:18px">
+          <div style="background:{color};color:white;padding:6px 10px;border-radius:5px;
+                      font-weight:bold;font-size:13px;margin-bottom:8px">
+            {day_label}{(' <span style="font-weight:normal;opacity:.85;font-size:11px">· ' + date_s + '</span>') if date_s else ''}
+          </div>
+          {locs_html}
+        </div>"""
+
+    # ── Full panel HTML + toggle button ───────────────────────────────────
+    return f"""
+    <!-- Itinerary toggle button -->
+    <div id="itin-btn"
+         onclick="document.getElementById('itin-panel').style.display='flex';
+                  document.getElementById('itin-btn').style.display='none'"
+         title="Show full itinerary"
+         style="position:fixed;top:80px;right:10px;z-index:9999;
+                background:#2c3e50;color:white;border-radius:6px;
+                padding:8px 12px;cursor:pointer;font-size:13px;
+                box-shadow:2px 2px 6px rgba(0,0,0,.35);
+                font-family:Arial,sans-serif;user-select:none">
+      📋 Itinerary
+    </div>
+
+    <!-- Itinerary side panel -->
+    <div id="itin-panel"
+         style="display:none;position:fixed;top:0;right:0;height:100%;width:390px;
+                z-index:10000;background:white;
+                box-shadow:-4px 0 16px rgba(0,0,0,.2);
+                flex-direction:column;font-family:Arial,sans-serif">
+
+      <!-- Panel header -->
+      <div style="background:#2c3e50;color:white;padding:14px 16px;flex-shrink:0">
+        <div style="display:flex;justify-content:space-between;align-items:flex-start">
+          <div>
+            <div style="font-size:16px;font-weight:bold">{trip_name}</div>
+            {"<div style='font-size:12px;opacity:.8;margin-top:2px'>📍 " + location_line + "</div>" if location_line else ""}
+          </div>
+          <div onclick="document.getElementById('itin-panel').style.display='none';
+                        document.getElementById('itin-btn').style.display='block'"
+               style="cursor:pointer;font-size:20px;line-height:1;padding:0 4px;opacity:.8"
+               title="Close">✕</div>
+        </div>
+      </div>
+
+      <!-- Scrollable content -->
+      <div style="overflow-y:auto;padding:16px;flex:1">
+        {acc_section}
+        {days_html}
+      </div>
+    </div>"""
+
+
 def build_map(data: dict) -> folium.Map:
     """Create the Folium map from geocoded trip data."""
 
@@ -659,6 +805,9 @@ def build_map(data: dict) -> folium.Map:
       </div>
     </div>"""
     m.get_root().html.add_child(folium.Element(legend))
+
+    # ── Itinerary panel ───────────────────────────────────────────────────
+    m.get_root().html.add_child(folium.Element(build_itinerary_panel(data)))
 
     # ── Layer control ─────────────────────────────────────────────────────
     folium.LayerControl(collapsed=False).add_to(m)
