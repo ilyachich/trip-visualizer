@@ -2,7 +2,7 @@
 """
 Trip Visualizer
 ===============
-Parses a free-text trip description with Google Gemini (FREE) and renders an
+Parses a free-text trip description with Groq (FREE) and renders an
 interactive HTML map (Folium / Leaflet) with:
   - Per-day colour-coded routes
   - Typed markers  (hotel, restaurant, activity, POI, transport)
@@ -16,10 +16,10 @@ Usage
 
 Requirements  (all free)
 ------------------------
-    pip install folium google-genai requests
+    pip install folium groq requests
 
-Get a free Google API key at: https://aistudio.google.com/app/apikey
-Set it once:  setx GOOGLE_API_KEY "your-key-here"   (Windows)
+Get a free Groq API key at: https://console.groq.com
+Set it once:  setx GROQ_API_KEY "your-key-here"   (Windows)
 Or pass it:   python trip_visualizer.py trip.txt --api-key YOUR_KEY
 """
 
@@ -32,8 +32,7 @@ import sys
 import time
 from pathlib import Path
 
-from google import genai
-from google.genai import types as genai_types
+from groq import Groq
 import folium
 import requests
 
@@ -124,30 +123,30 @@ Rules:
 
 
 def parse_trip(text: str, api_key: str | None = None) -> dict:
-    """Call Google Gemini (free tier) to turn free-form trip text into structured JSON."""
+    """Call Groq (free tier) to turn free-form trip text into structured JSON."""
     import os
-    key = api_key or os.environ.get("GOOGLE_API_KEY")
+    key = api_key or os.environ.get("GROQ_API_KEY")
     if not key:
         print(
-            "Error: Google API key not found.\n"
-            "  Get a free key at https://aistudio.google.com/app/apikey\n"
-            "  Then run:  setx GOOGLE_API_KEY \"your-key-here\"  (open a new terminal after)",
+            "Error: Groq API key not found.\n"
+            "  Get a free key at https://console.groq.com\n"
+            "  Then run:  setx GROQ_API_KEY \"your-key-here\"  (open a new terminal after)",
             file=sys.stderr,
         )
         sys.exit(1)
 
-    client = genai.Client(api_key=key)
+    client = Groq(api_key=key)
 
-    print("Parsing trip description with Google Gemini (free)…", file=sys.stderr)
-    response = client.models.generate_content(
-        model="gemini-2.0-flash",
-        contents=f"Parse this trip:\n\n{text}",
-        config=genai_types.GenerateContentConfig(
-            system_instruction=SYSTEM_PROMPT,
-            max_output_tokens=4096,
-        ),
+    print("Parsing trip description with Groq (free)…", file=sys.stderr)
+    response = client.chat.completions.create(
+        model="llama-3.3-70b-versatile",
+        messages=[
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "user", "content": f"Parse this trip:\n\n{text}"},
+        ],
+        max_tokens=4096,
     )
-    raw = response.text.strip()
+    raw = response.choices[0].message.content.strip()
 
     # Strip accidental markdown fences
     raw = re.sub(r"^```(?:json)?\s*", "", raw)
@@ -156,7 +155,7 @@ def parse_trip(text: str, api_key: str | None = None) -> dict:
     try:
         data = json.loads(raw)
     except json.JSONDecodeError as exc:
-        print(f"Error: Gemini returned invalid JSON — {exc}", file=sys.stderr)
+        print(f"Error: Groq returned invalid JSON — {exc}", file=sys.stderr)
         print("Raw response:", raw[:500], file=sys.stderr)
         sys.exit(1)
 
