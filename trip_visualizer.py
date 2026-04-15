@@ -656,7 +656,27 @@ def build_map(data: dict) -> folium.Map:
         print("Warning: no coordinates resolved — map will show world view.",
               file=sys.stderr)
 
-    m = folium.Map(location=center, zoom_start=7, tiles="CartoDB positron")
+    m = folium.Map(location=center, zoom_start=7, tiles=None)
+
+    # Google Maps road view (default)
+    folium.TileLayer(
+        tiles="https://mt1.google.com/vt/lyrs=m&x={x}&y={y}&z={z}",
+        attr="Google Maps",
+        name="Google Maps",
+        overlay=False,
+        control=True,
+        show=True,
+    ).add_to(m)
+
+    # Google Satellite + labels
+    folium.TileLayer(
+        tiles="https://mt1.google.com/vt/lyrs=y&x={x}&y={y}&z={z}",
+        attr="Google Satellite",
+        name="Google Satellite",
+        overlay=False,
+        control=True,
+        show=False,
+    ).add_to(m)
 
     # Auto-fit zoom to the actual travel area
     if min_lat is not None:
