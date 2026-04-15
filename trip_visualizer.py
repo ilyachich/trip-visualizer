@@ -180,13 +180,36 @@ def parse_trip(text: str, api_key: str | None = None) -> dict:
 # Geocoding (OpenStreetMap Nominatim — free, no key needed)
 # ---------------------------------------------------------------------------
 
-def geocode(address: str, cache: dict[str, tuple | None]) -> tuple[float, float] | None:
+# ISO 3166-1 alpha-2 codes for common travel destinations
+COUNTRY_CODES: dict[str, str] = {
+    "japan": "jp", "france": "fr", "italy": "it", "spain": "es",
+    "germany": "de", "united kingdom": "gb", "uk": "gb", "england": "gb",
+    "united states": "us", "usa": "us", "australia": "au", "canada": "ca",
+    "netherlands": "nl", "portugal": "pt", "greece": "gr", "turkey": "tr",
+    "thailand": "th", "vietnam": "vn", "indonesia": "id", "singapore": "sg",
+    "china": "cn", "south korea": "kr", "korea": "kr", "india": "in",
+    "mexico": "mx", "brazil": "br", "argentina": "ar", "israel": "il",
+    "egypt": "eg", "morocco": "ma", "south africa": "za", "kenya": "ke",
+    "new zealand": "nz", "austria": "at", "switzerland": "ch", "belgium": "be",
+    "sweden": "se", "norway": "no", "denmark": "dk", "finland": "fi",
+    "poland": "pl", "czech republic": "cz", "hungary": "hu", "croatia": "hr",
+}
+
+
+def geocode(
+    address: str,
+    cache: dict[str, tuple | None],
+    countrycode: str | None = None,
+) -> tuple[float, float] | None:
     """Resolve an address to (lat, lon), with caching and rate-limiting."""
-    if address in cache:
-        return cache[address]
+    cache_key = f"{address}|{countrycode}"
+    if cache_key in cache:
+        return cache[cache_key]
 
     headers = {"User-Agent": "TripVisualizer/1.0 (personal travel mapping tool)"}
-    params  = {"q": address, "format": "json", "limit": 1}
+    params: dict = {"q": address, "format": "json", "limit": 1}
+    if countrycode:
+        params["countrycodes"] = countrycode
 
     try:
         resp = requests.get(
@@ -197,31 +220,32 @@ def geocode(address: str, cache: dict[str, tuple | None]) -> tuple[float, float]
         results = resp.json()
         if results:
             coords = (float(results[0]["lat"]), float(results[0]["lon"]))
-            cache[address] = coords
+            cache[cache_key] = coords
             time.sleep(1.1)   # Nominatim asks for ≤ 1 req/s
             return coords
     except Exception as exc:
         print(f"  ⚠  Could not geocode '{address}': {exc}", file=sys.stderr)
 
-    cache[address] = None
+    cache[cache_key] = None
     return None
 
 
 def geocode_trip(data: dict) -> dict[str, tuple | None]:
     """Geocode every address in the trip data; return filled cache."""
     cache: dict[str, tuple | None] = {}
+    countrycode = COUNTRY_CODES.get(data.get("country", "").lower())
     print("Geocoding locations (Nominatim)…", file=sys.stderr)
 
     for day in data.get("days", []):
         for loc in day.get("locations", []):
             addr = loc.get("address") or loc["name"]
             print(f"  {addr}", file=sys.stderr)
-            loc["_coords"] = geocode(addr, cache)
+            loc["_coords"] = geocode(addr, cache, countrycode)
 
     for acc in data.get("accommodations", []):
         addr = acc.get("address") or acc["name"]
         print(f"  {addr}  (accommodation)", file=sys.stderr)
-        acc["_coords"] = geocode(addr, cache)
+        acc["_coords"] = geocode(addr, cache, countrycode)
 
     return cache
 
@@ -263,14 +287,17 @@ def calculate_routes(data: dict) -> None:
         )
         for i, loc in enumerate(locs):
             if i < len(locs) - 1:
-                route = get_route(loc["_coords"], locs[i + 1]["_coords"])
-                loc["_route_to_next"] = route
+                next_loc = locs[i + 1]
+                route = get_route(loc["_coords"], next_loc["_coords"])
                 if route:
+                    route["next_name"] = next_loc["name"]
+                    route["from_name"] = loc["name"]
                     print(
-                        f"  {loc['name']} → {locs[i+1]['name']}: "
+                        f"  {loc['name']} → {next_loc['name']}: "
                         f"{route['km']} km, {route['drive_mins']} min drive",
                         file=sys.stderr,
                     )
+                loc["_route_to_next"] = route
                 time.sleep(0.5)
             else:
                 loc["_route_to_next"] = None
@@ -281,23 +308,47 @@ def calculate_routes(data: dict) -> None:
 # ---------------------------------------------------------------------------
 
 def fetch_wiki_image(name: str) -> str | None:
-    """Return a Wikipedia thumbnail URL for the given place name, or None."""
+    """Return a Wikipedia thumbnail URL for the given place name, or None.
+
+    Uses Wikipedia's search API so fuzzy/partial names still find the right
+    article (e.g. "Senso-ji Temple" → "Senso-ji", "Ichiran Ramen" → no result).
+    """
+    headers = {"User-Agent": "TripVisualizer/1.0"}
     try:
-        resp = requests.get(
+        # Step 1: search for the best-matching article title
+        search_resp = requests.get(
             "https://en.wikipedia.org/w/api.php",
             params={
                 "action": "query",
-                "titles": name,
+                "list": "search",
+                "srsearch": name,
+                "format": "json",
+                "srlimit": 1,
+                "srnamespace": 0,
+            },
+            headers=headers,
+            timeout=8,
+        )
+        results = search_resp.json().get("query", {}).get("search", [])
+        if not results:
+            return None
+        title = results[0]["title"]
+
+        # Step 2: fetch the thumbnail for that article
+        img_resp = requests.get(
+            "https://en.wikipedia.org/w/api.php",
+            params={
+                "action": "query",
+                "titles": title,
                 "prop": "pageimages",
                 "format": "json",
                 "pithumbsize": 300,
                 "piprop": "thumbnail",
-                "redirects": 1,
             },
-            headers={"User-Agent": "TripVisualizer/1.0"},
+            headers=headers,
             timeout=8,
         )
-        pages = resp.json().get("query", {}).get("pages", {})
+        pages = img_resp.json().get("query", {}).get("pages", {})
         for page in pages.values():
             thumb = page.get("thumbnail", {}).get("source")
             if thumb:
@@ -335,21 +386,22 @@ def fetch_wiki_images(data: dict) -> None:
 # ---------------------------------------------------------------------------
 
 def _route_badge(route: dict | None) -> str:
-    """Return an HTML snippet showing distance + drive time, or empty string."""
+    """Return an HTML snippet showing from → to distance and travel time."""
     if not route:
         return ""
-    km   = route["km"]
-    mins = route["drive_mins"]
-    walk = round(km / 0.08)  # ~5 km/h walking ≈ 0.083 km/min
+    km        = route["km"]
+    mins      = route["drive_mins"]
+    next_name = route.get("next_name", "next stop")
+    walk      = round(km / 0.08)  # ~5 km/h walking ≈ 0.083 km/min
     if km < 1.5:
         travel = f"🚶 {walk} min walk"
     else:
         transit = round(mins * 1.35)
-        travel  = f"🚗 {mins} min · 🚇 ~{transit} min"
+        travel  = f"🚗 {mins} min &nbsp;·&nbsp; 🚇 ~{transit} min"
     return (
         f'<div style="margin-top:6px;padding-top:6px;border-top:1px solid #eee;'
-        f'font-size:11px;color:#666">'
-        f'➡ next stop: {km} km &nbsp;|&nbsp; {travel}</div>'
+        f'font-size:11px;color:#555">'
+        f'<b>To {next_name}:</b> {km} km &nbsp;|&nbsp; {travel}</div>'
     )
 
 
