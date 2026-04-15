@@ -153,7 +153,7 @@ def parse_trip(text: str, api_key: str | None = None) -> dict:
             {"role": "system", "content": SYSTEM_PROMPT},
             {"role": "user", "content": f"Parse this trip:\n\n{text}"},
         ],
-        max_tokens=4096,
+        max_tokens=8192,
     )
     raw = response.choices[0].message.content.strip()
 
