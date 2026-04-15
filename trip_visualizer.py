@@ -83,6 +83,7 @@ Schema:
 {
   "trip_name": "string",
   "country": "string",
+  "region": "city or region name, e.g. 'Tokyo & Kyoto' or 'Tuscany'",
   "days": [
     {
       "day_number": 1,
@@ -93,6 +94,10 @@ Schema:
           "name": "Location Name",
           "type": "hotel|restaurant|activity|poi|transport",
           "description": "one-sentence description",
+          "highlights": "2-3 key facts or highlights, comma-separated (null if none)",
+          "tips": "one practical tip: opening hours, booking advice, best time to visit (null if none)",
+          "cuisine": "cuisine type if restaurant, else null",
+          "price_range": "$ | $$ | $$$ | $$$$ for restaurants/paid activities, else null",
           "address": "full address including city and country",
           "order": 1
         }
@@ -105,7 +110,9 @@ Schema:
       "address": "full address including city and country",
       "check_in_day": 1,
       "check_out_day": 3,
-      "description": "one-sentence description"
+      "description": "one-sentence description",
+      "stars": 4,
+      "amenities": "up to 3 amenities comma-separated, e.g. WiFi, Pool, Restaurant (null if unknown)"
     }
   ]
 }
@@ -119,6 +126,8 @@ Rules:
          poi=sight/landmark, transport=airport/station/transit hub.
 - If a hotel appears in the daily itinerary keep it there too (so the day
   route is complete), but also list it in accommodations.
+- Use your knowledge to fill in highlights, tips, cuisine, stars etc. even if
+  not explicitly stated in the text — these enrich the map popups.
 """
 
 
@@ -218,23 +227,187 @@ def geocode_trip(data: dict) -> dict[str, tuple | None]:
 
 
 # ---------------------------------------------------------------------------
+# Routing (OSRM — free, no key needed)
+# ---------------------------------------------------------------------------
+
+def get_route(start: tuple[float, float], end: tuple[float, float]) -> dict | None:
+    """Get driving distance and duration between two coords via OSRM (free)."""
+    url = (
+        f"http://router.project-osrm.org/route/v1/driving/"
+        f"{start[1]},{start[0]};{end[1]},{end[0]}"
+    )
+    try:
+        resp = requests.get(url, params={"overview": "false"}, timeout=10)
+        resp.raise_for_status()
+        data = resp.json()
+        if data.get("code") == "Ok":
+            route = data["routes"][0]
+            km    = route["distance"] / 1000
+            mins  = route["duration"] / 60
+            return {"km": round(km, 1), "drive_mins": round(mins)}
+    except Exception:
+        pass
+    return None
+
+
+def calculate_routes(data: dict) -> None:
+    """
+    For each day, compute driving distance/time between consecutive stops
+    and store as _route_to_next on each location dict.
+    """
+    print("Calculating routes (OSRM)…", file=sys.stderr)
+    for day in data.get("days", []):
+        locs = sorted(
+            [l for l in day.get("locations", []) if l.get("_coords")],
+            key=lambda x: x.get("order", 99),
+        )
+        for i, loc in enumerate(locs):
+            if i < len(locs) - 1:
+                route = get_route(loc["_coords"], locs[i + 1]["_coords"])
+                loc["_route_to_next"] = route
+                if route:
+                    print(
+                        f"  {loc['name']} → {locs[i+1]['name']}: "
+                        f"{route['km']} km, {route['drive_mins']} min drive",
+                        file=sys.stderr,
+                    )
+                time.sleep(0.5)
+            else:
+                loc["_route_to_next"] = None
+
+
+# ---------------------------------------------------------------------------
+# Wikipedia images (free, no key needed)
+# ---------------------------------------------------------------------------
+
+def fetch_wiki_image(name: str) -> str | None:
+    """Return a Wikipedia thumbnail URL for the given place name, or None."""
+    try:
+        resp = requests.get(
+            "https://en.wikipedia.org/w/api.php",
+            params={
+                "action": "query",
+                "titles": name,
+                "prop": "pageimages",
+                "format": "json",
+                "pithumbsize": 300,
+                "piprop": "thumbnail",
+                "redirects": 1,
+            },
+            headers={"User-Agent": "TripVisualizer/1.0"},
+            timeout=8,
+        )
+        pages = resp.json().get("query", {}).get("pages", {})
+        for page in pages.values():
+            thumb = page.get("thumbnail", {}).get("source")
+            if thumb:
+                return thumb
+    except Exception:
+        pass
+    return None
+
+
+def fetch_wiki_images(data: dict) -> None:
+    """Fetch Wikipedia thumbnail for every location and store as _image_url."""
+    print("Fetching place images (Wikipedia)…", file=sys.stderr)
+    seen: dict[str, str | None] = {}
+    for day in data.get("days", []):
+        for loc in day.get("locations", []):
+            name = loc["name"]
+            if name not in seen:
+                url = fetch_wiki_image(name)
+                seen[name] = url
+                status = "ok" if url else "none"
+                print(f"  {name}: {status}", file=sys.stderr)
+                time.sleep(0.3)
+            loc["_image_url"] = seen[name]
+    for acc in data.get("accommodations", []):
+        name = acc["name"]
+        if name not in seen:
+            url = fetch_wiki_image(name)
+            seen[name] = url
+            time.sleep(0.3)
+        acc["_image_url"] = seen[name]
+
+
+# ---------------------------------------------------------------------------
 # Map building
 # ---------------------------------------------------------------------------
 
-def _popup(title: str, subtitle: str, description: str) -> folium.Popup:
+def _route_badge(route: dict | None) -> str:
+    """Return an HTML snippet showing distance + drive time, or empty string."""
+    if not route:
+        return ""
+    km   = route["km"]
+    mins = route["drive_mins"]
+    walk = round(km / 0.08)  # ~5 km/h walking ≈ 0.083 km/min
+    if km < 1.5:
+        travel = f"🚶 {walk} min walk"
+    else:
+        transit = round(mins * 1.35)
+        travel  = f"🚗 {mins} min · 🚇 ~{transit} min"
+    return (
+        f'<div style="margin-top:6px;padding-top:6px;border-top:1px solid #eee;'
+        f'font-size:11px;color:#666">'
+        f'➡ next stop: {km} km &nbsp;|&nbsp; {travel}</div>'
+    )
+
+
+def _popup_html(
+    title: str,
+    subtitle: str,
+    description: str,
+    *,
+    highlights: str | None = None,
+    tips: str | None = None,
+    cuisine: str | None = None,
+    price_range: str | None = None,
+    stars: int | None = None,
+    amenities: str | None = None,
+    image_url: str | None = None,
+    route: dict | None = None,
+) -> folium.Popup:
+    img_html = ""
+    if image_url:
+        img_html = (
+            f'<a href="{image_url}" target="_blank" title="Click to enlarge">'
+            f'<img src="{image_url}" style="width:100%;border-radius:4px;'
+            f'margin-bottom:8px;cursor:zoom-in" /></a>'
+        )
+
+    stars_html = ""
+    if stars:
+        stars_html = f'<span style="color:#f0a500">{"★" * int(stars)}{"☆" * (5 - int(stars))}</span> &nbsp;'
+
+    extra_rows = ""
+    if highlights:
+        extra_rows += f'<div style="margin-top:5px;font-size:11px;color:#555">✨ {highlights}</div>'
+    if tips:
+        extra_rows += f'<div style="margin-top:4px;font-size:11px;color:#2980b9">💡 {tips}</div>'
+    if cuisine:
+        label = f"{cuisine}"
+        if price_range:
+            label += f" · {price_range}"
+        extra_rows += f'<div style="margin-top:4px;font-size:11px;color:#888">🍴 {label}</div>'
+    if amenities:
+        extra_rows += f'<div style="margin-top:4px;font-size:11px;color:#888">🏷 {amenities}</div>'
+
     html = f"""
-    <div style="font-family:Arial,sans-serif;min-width:200px;max-width:280px">
-      <p style="margin:0 0 6px 0;font-size:14px;font-weight:bold;color:#222">{title}</p>
-      <p style="margin:0 0 6px 0;font-size:11px;color:#888">{subtitle}</p>
+    <div style="font-family:Arial,sans-serif;min-width:220px;max-width:300px">
+      {img_html}
+      <p style="margin:0 0 2px 0;font-size:14px;font-weight:bold;color:#222">{title}</p>
+      <p style="margin:0 0 5px 0;font-size:11px;color:#888">{stars_html}{subtitle}</p>
       <p style="margin:0;font-size:12px;color:#444">{description}</p>
+      {extra_rows}
+      {_route_badge(route)}
     </div>"""
-    return folium.Popup(html, max_width=300)
+    return folium.Popup(html, max_width=320)
 
 
 def build_map(data: dict) -> folium.Map:
     """Create the Folium map from geocoded trip data."""
 
-    # Collect all coordinates for centering
+    # Collect all coordinates
     all_coords = [
         loc["_coords"]
         for day in data.get("days", [])
@@ -247,18 +420,22 @@ def build_map(data: dict) -> folium.Map:
     ]
 
     if all_coords:
-        center = [
-            sum(c[0] for c in all_coords) / len(all_coords),
-            sum(c[1] for c in all_coords) / len(all_coords),
-        ]
-        zoom = 12
+        min_lat = min(c[0] for c in all_coords)
+        max_lat = max(c[0] for c in all_coords)
+        min_lon = min(c[1] for c in all_coords)
+        max_lon = max(c[1] for c in all_coords)
+        center  = [(min_lat + max_lat) / 2, (min_lon + max_lon) / 2]
     else:
-        center = [20.0, 0.0]
-        zoom = 2
+        center  = [20.0, 0.0]
+        min_lat = max_lat = min_lon = max_lon = None
         print("Warning: no coordinates resolved — map will show world view.",
               file=sys.stderr)
 
-    m = folium.Map(location=center, zoom_start=zoom, tiles="CartoDB positron")
+    m = folium.Map(location=center, zoom_start=7, tiles="CartoDB positron")
+
+    # Auto-fit zoom to the actual travel area
+    if min_lat is not None:
+        m.fit_bounds([[min_lat, min_lon], [max_lat, max_lon]], padding=[40, 40])
 
     # ── Per-day layers ────────────────────────────────────────────────────
     for i, day in enumerate(data.get("days", [])):
@@ -266,23 +443,39 @@ def build_map(data: dict) -> folium.Map:
         day_label  = day.get("label") or f"Day {day['day_number']}"
         fg         = folium.FeatureGroup(name=f"📅 {day_label}", show=True)
         day_coords: list[tuple[float, float]] = []
+        route_segments: list[str] = []
 
-        for loc in sorted(day.get("locations", []), key=lambda x: x.get("order", 99)):
+        sorted_locs = sorted(day.get("locations", []), key=lambda x: x.get("order", 99))
+
+        for loc in sorted_locs:
             coords = loc.get("_coords")
             if not coords:
                 continue
             day_coords.append(coords)
 
-            loc_type = loc.get("type", "default")
-            cfg      = TYPE_CONFIG.get(loc_type, TYPE_CONFIG["default"])
-            emoji    = TYPE_EMOJI.get(loc_type, TYPE_EMOJI["default"])
+            loc_type  = loc.get("type", "default")
+            cfg       = TYPE_CONFIG.get(loc_type, TYPE_CONFIG["default"])
+            emoji     = TYPE_EMOJI.get(loc_type, TYPE_EMOJI["default"])
+            route_nxt = loc.get("_route_to_next")
+
+            if route_nxt:
+                route_segments.append(
+                    f"{loc['name']} → next: {route_nxt['km']} km, "
+                    f"{route_nxt['drive_mins']} min drive"
+                )
 
             folium.Marker(
                 location=coords,
-                popup=_popup(
+                popup=_popup_html(
                     f"{emoji} {loc['name']}",
                     f"Day {day['day_number']} · {loc_type.title()}",
                     loc.get("description", ""),
+                    highlights  = loc.get("highlights"),
+                    tips        = loc.get("tips"),
+                    cuisine     = loc.get("cuisine"),
+                    price_range = loc.get("price_range"),
+                    image_url   = loc.get("_image_url"),
+                    route       = route_nxt,
                 ),
                 tooltip=f"Day {day['day_number']}: {loc['name']}",
                 icon=folium.Icon(
@@ -294,12 +487,20 @@ def build_map(data: dict) -> folium.Map:
 
         # Dashed route line for the day
         if len(day_coords) >= 2:
+            total_km   = sum(s.get("km", 0) for s in
+                             [l.get("_route_to_next") or {} for l in sorted_locs if l.get("_coords")])
+            total_mins = sum(s.get("drive_mins", 0) for s in
+                             [l.get("_route_to_next") or {} for l in sorted_locs if l.get("_coords")])
+            line_tip   = day_label
+            if total_km:
+                line_tip += f" — {round(total_km, 1)} km total, ~{total_mins} min drive"
+
             folium.PolyLine(
                 locations=day_coords,
                 color=color,
                 weight=3,
                 opacity=0.85,
-                tooltip=day_label,
+                tooltip=line_tip,
                 dash_array="10 6",
             ).add_to(fg)
 
@@ -316,10 +517,13 @@ def build_map(data: dict) -> folium.Map:
 
         folium.Marker(
             location=coords,
-            popup=_popup(
+            popup=_popup_html(
                 f"🏨 {acc['name']}",
                 f"Check-in: Day {ci}  ·  Check-out: Day {co}",
                 acc.get("description", ""),
+                stars     = acc.get("stars"),
+                amenities = acc.get("amenities"),
+                image_url = acc.get("_image_url"),
             ),
             tooltip=f"🏨 {acc['name']}  (Days {ci}–{co})",
             icon=folium.Icon(color="darkblue", icon="home", prefix="glyphicon"),
@@ -328,6 +532,10 @@ def build_map(data: dict) -> folium.Map:
 
     # ── Legend ────────────────────────────────────────────────────────────
     days = data.get("days", [])
+    region  = data.get("region", "")
+    country = data.get("country", "")
+    location_line = ", ".join(filter(None, [region, country]))
+
     def _day_row(i: int, day: dict) -> str:
         color = DAY_COLORS[i % len(DAY_COLORS)]
         label = day.get("label") or f"Day {day['day_number']}"
@@ -340,15 +548,21 @@ def build_map(data: dict) -> folium.Map:
 
     day_rows = "".join(_day_row(i, day) for i, day in enumerate(days))
 
+    location_html = (
+        f'<div style="font-size:11px;color:#888;margin-bottom:8px">📍 {location_line}</div>'
+        if location_line else ""
+    )
+
     legend = f"""
     <div style="
         position:fixed;bottom:30px;left:30px;z-index:9999;
         background:white;padding:12px 16px;border-radius:8px;
         border:1px solid #ccc;box-shadow:2px 2px 8px rgba(0,0,0,.2);
         font-family:Arial,sans-serif;font-size:12px;min-width:170px">
-      <b style="display:block;margin-bottom:8px;font-size:13px">
+      <b style="display:block;margin-bottom:4px;font-size:13px">
         {data.get('trip_name','Trip')}
       </b>
+      {location_html}
       <div>🏨 Hotel / Stay</div>
       <div>🍽️ Restaurant</div>
       <div>🎯 Activity</div>
@@ -386,7 +600,7 @@ def main() -> None:
     )
     parser.add_argument(
         "--api-key",
-        help="Google API key (overrides GOOGLE_API_KEY env var). Free at aistudio.google.com",
+        help="Groq API key (overrides GROQ_API_KEY env var). Free at console.groq.com",
     )
     parser.add_argument(
         "--json-output",
@@ -420,6 +634,8 @@ def main() -> None:
         print(f"Parsed JSON → {args.json_output}", file=sys.stderr)
 
     geocode_trip(trip_data)
+    calculate_routes(trip_data)
+    fetch_wiki_images(trip_data)
     trip_map = build_map(trip_data)
 
     out = Path(args.output)
