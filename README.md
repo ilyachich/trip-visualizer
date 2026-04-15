@@ -2,14 +2,17 @@
 
 Turn any free-text trip description into an interactive map — day by day, completely free.
 
-![example map](https://i.imgur.com/placeholder.png)
-
 ## What it does
 
 Paste your trip notes (hotels, restaurants, sights, day by day) and get back a single HTML file you can open in any browser:
 
 - **Per-day colour-coded routes** connecting all stops in order
 - **Typed markers** — hotels 🏨, restaurants 🍽️, activities 🎯, sights 📍, transport ✈️
+- **Distances & travel times** — driving distance, car time, and transit/walking estimate between every stop
+- **Place photos** — Wikipedia thumbnail in every popup, click to enlarge
+- **Rich popups** — highlights, practical tips, cuisine type, price range, hotel star rating and amenities
+- **Auto-zoom** — map fits exactly to the travel area
+- **Region & country** displayed in the legend
 - **Accommodation layer** showing every hotel with check-in / check-out days
 - Clickable popups, toggleable layers, built-in legend
 
@@ -17,8 +20,10 @@ Paste your trip notes (hotels, restaurants, sights, day by day) and get back a s
 
 | Service | Cost |
 |---|---|
-| Groq (AI parsing) | Free |
+| Groq / Llama 3.3 70B (AI parsing) | Free |
 | OpenStreetMap geocoding | Free |
+| OSRM routing (distances & times) | Free |
+| Wikipedia images | Free |
 | Folium map rendering | Free |
 | **Total** | **$0** |
 
@@ -65,6 +70,8 @@ See [example_trip.txt](example_trip.txt) for a sample 7-day Japan itinerary.
 
 ## How it works
 
-1. **Parse** — Groq (Llama 3.3 70B) reads your text and extracts a structured list of days, locations, and accommodations
+1. **Parse** — Groq (Llama 3.3 70B) reads your text and extracts a structured list of days, locations, accommodations, highlights, tips, and more
 2. **Geocode** — Each place name is looked up on OpenStreetMap to get its coordinates
-3. **Render** — Folium builds an interactive Leaflet.js map and saves it as a self-contained HTML file
+3. **Route** — OSRM calculates driving distance and time between consecutive stops each day
+4. **Images** — Wikipedia thumbnails are fetched for each location
+5. **Render** — Folium builds an interactive Leaflet.js map and saves it as a self-contained HTML file
