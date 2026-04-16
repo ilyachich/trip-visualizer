@@ -683,6 +683,22 @@ def build_map(data: dict) -> folium.Map:
     if min_lat is not None:
         m.fit_bounds([[min_lat, min_lon], [max_lat, max_lon]], padding=[40, 40])
 
+    accommodations = data.get("accommodations", [])
+
+    def overnight_hotel(day_num: int) -> dict | None:
+        """Return the accommodation where the traveller sleeps on night day_num."""
+        for acc in accommodations:
+            ci = acc.get("check_in_day") or 0
+            co = acc.get("check_out_day") or 0
+            if ci <= day_num < co and acc.get("_coords"):
+                return acc
+        return None
+
+    def hotel_already_in_locs(hotel: dict, locs: list) -> bool:
+        """True if the hotel name appears in the day's location list."""
+        h = hotel["name"].lower()
+        return any(h in loc["name"].lower() or loc["name"].lower() in h for loc in locs)
+
     # ── Per-day layers ────────────────────────────────────────────────────
     for i, day in enumerate(data.get("days", [])):
         color      = DAY_COLORS[i % len(DAY_COLORS)]
@@ -692,6 +708,42 @@ def build_map(data: dict) -> folium.Map:
         route_segments: list[str] = []
 
         sorted_locs = sorted(day.get("locations", []), key=lambda x: x.get("order", 99))
+
+        # ── Overnight hotel as day start ──────────────────────────────────
+        hotel = overnight_hotel(day["day_number"])
+        if hotel and not hotel_already_in_locs(hotel, sorted_locs):
+            hc = hotel["_coords"]
+            day_coords.append(hc)
+            stars   = int(hotel.get("stars") or 0)
+            stars_s = "★" * stars if stars else ""
+            ci, co  = hotel.get("check_in_day", "?"), hotel.get("check_out_day", "?")
+
+            hotel_marker_html = f"""
+            <div style="position:relative;width:40px;height:40px">
+              <div style="background:white;border-radius:50%;width:34px;height:34px;
+                          text-align:center;line-height:34px;font-size:18px;
+                          border:3px dashed {color};
+                          box-shadow:0 2px 5px rgba(0,0,0,.35)">🏨</div>
+              <div style="position:absolute;bottom:-3px;right:-3px;font-size:13px
+                          ;line-height:1">🌙</div>
+            </div>"""
+
+            folium.Marker(
+                location=hc,
+                popup=_popup_html(
+                    f"🏨 {hotel['name']}",
+                    f"Overnight · Day {day['day_number']} start  {stars_s}",
+                    hotel.get("description", ""),
+                    amenities = hotel.get("amenities"),
+                    image_url = hotel.get("_image_url"),
+                ),
+                tooltip=f"🌙 Day {day['day_number']} starts here — {hotel['name']}",
+                icon=folium.DivIcon(
+                    html=hotel_marker_html,
+                    icon_size=(40, 40),
+                    icon_anchor=(19, 36),
+                ),
+            ).add_to(fg)
 
         stop_num = 0
         for loc in sorted_locs:
