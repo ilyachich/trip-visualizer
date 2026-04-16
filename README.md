@@ -6,18 +6,19 @@ Turn any free-text trip description into an interactive map — day by day, comp
 
 Paste your trip notes (hotels, restaurants, sights, day by day) and get back a single HTML file you can open in any browser:
 
-- **Per-day colour-coded routes** connecting all stops in order
-- **Typed markers with correct icons** — 🛏 hotels, 🍴 restaurants, 📷 activities, 📍 sights, ✈️ airports, 🚂 trains, 🚌 buses, 🚇 metro, 🚢 ships
-- **Distances & travel times** — shows "To [Place]: X km | 🚗 12 min · 🚇 ~16 min" between every stop
+- **Per-day colour-coded routes** — numbered stops (1, 2, 3…) with direction arrows showing travel order
+- **Typed markers** — 🏨 hotels, 🍴 restaurants, 🎯 activities, 🏛️ sights, ✈️ airports, 🚂 trains, 🚌 buses, 🚇 metro, 🚢 ships
+- **Overnight hotel as day start** — each day's route begins at the hotel where you slept (🌙 marker), even if not explicitly in the text
+- **Return-to-hotel line** — route closes back to the night's hotel at the end of each day
+- **Accommodation layer** — hotel badge markers (offset to avoid overlap) with stars, check-in/out days
+- **Distances & travel times** — "To [Place]: X km | 🚗 12 min · 🚇 ~16 min" between every stop
 - **Place photos** — Wikipedia thumbnail in every popup, click to enlarge
-- **Rich popups** — highlights, practical tips, cuisine type, price range, hotel star rating and amenities
-- **📋 Itinerary panel** — floating button opens a full side panel with the complete trip description day by day, including all stops, tips, distances and accommodation details
-- **Google Maps base layer** — road map by default, switchable to Google Satellite in the layer control
-- **Auto-zoom** — map fits exactly to the travel area (no whole-continent view)
-- **Country-aware geocoding** — locations restricted to the correct country, preventing wrong-country matches
-- **Region & country** displayed in the legend
-- **Accommodation layer** showing every hotel with check-in / check-out days
-- Clickable popups, toggleable layers, built-in legend
+- **Rich popups** — highlights, practical tips, cuisine, price range, hotel stars and amenities
+- **📋 Itinerary panel** — left-side button opens a full side panel with the complete trip day by day
+- **Google Maps base layer** — road map by default, switchable to Google Satellite
+- **Auto-zoom** — map fits exactly to the travel area
+- **Country-aware geocoding** — restricts search to the correct country, preventing wrong-location matches
+- **Region & country** in the legend
 
 ## Cost
 
@@ -73,18 +74,19 @@ See [example_trip.txt](example_trip.txt) for a sample 7-day Japan itinerary.
 
 ## How it works
 
-1. **Parse** — Groq (Llama 3.3 70B) reads your text and extracts a structured list of days, locations, transport modes, accommodations, highlights, tips, cuisine, hotel stars, and more
-2. **Geocode** — Each place is looked up on OpenStreetMap, restricted to the correct country to avoid wrong-country matches
+1. **Parse** — Groq (Llama 3.3 70B) reads your text and extracts days, locations, transport modes, accommodations, highlights, tips, cuisine, hotel stars, and more
+2. **Geocode** — Each place is looked up on OpenStreetMap, restricted to the correct country
 3. **Route** — OSRM calculates driving distance and time between consecutive stops each day
 4. **Images** — Wikipedia search API finds thumbnails for each location
-5. **Render** — Folium builds an interactive Leaflet.js map and saves it as a self-contained HTML file
+5. **Render** — Folium builds an interactive Leaflet.js map saved as a self-contained HTML file
 
 ## Map controls
 
 | Control | Description |
 |---|---|
-| 📋 Itinerary | Opens full trip description panel (left side button, below zoom controls) |
+| 📋 Itinerary | Opens full trip description panel (left-side button, below zoom controls) |
 | Layer control | Toggle individual days and accommodation layer on/off |
 | Legend | Shows trip name, region, day colours and marker types |
 | Marker click | Opens popup with photo, description, highlights, tips and distance to next stop |
 | Route line hover | Shows day label and total distance |
+| 🌙 marker | Hotel where the day starts (overnight stay) |
