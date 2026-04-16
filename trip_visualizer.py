@@ -92,7 +92,7 @@ TYPE_EMOJI = {
     "hotel":      "🏨",
     "restaurant": "🍽️",
     "activity":   "🎯",
-    "poi":        "📍",
+    "poi":        "🏛️",
     "transport":  "🚆",
     "default":    "📌",
 }
@@ -836,11 +836,30 @@ def build_map(data: dict) -> folium.Map:
         coords = acc.get("_coords")
         if not coords:
             continue
-        ci = acc.get("check_in_day",  "?")
-        co = acc.get("check_out_day", "?")
+        ci    = acc.get("check_in_day",  "?")
+        co    = acc.get("check_out_day", "?")
+        stars = int(acc.get("stars") or 0)
+        stars_s = "★" * stars if stars else ""
+
+        # Offset slightly north so it doesn't overlap day-route markers
+        offset_coords = (coords[0] + 0.0003, coords[1])
+
+        acc_marker_html = f"""
+        <div style="display:inline-block;text-align:center">
+          <div style="background:#154360;color:white;border-radius:8px;
+                      padding:5px 8px;font-size:16px;border:2px solid white;
+                      box-shadow:0 3px 7px rgba(0,0,0,.45);line-height:1.2">
+            🏨
+            <div style="font-size:9px;font-weight:bold;letter-spacing:.5px;
+                        opacity:.9">{stars_s or "HOTEL"}</div>
+          </div>
+          <div style="width:0;height:0;border-left:7px solid transparent;
+                      border-right:7px solid transparent;
+                      border-top:8px solid #154360;margin:0 auto"></div>
+        </div>"""
 
         folium.Marker(
-            location=coords,
+            location=offset_coords,
             popup=_popup_html(
                 f"🏨 {acc['name']}",
                 f"Check-in: Day {ci}  ·  Check-out: Day {co}",
@@ -849,8 +868,12 @@ def build_map(data: dict) -> folium.Map:
                 amenities = acc.get("amenities"),
                 image_url = acc.get("_image_url"),
             ),
-            tooltip=f"🏨 {acc['name']}  (Days {ci}–{co})",
-            icon=folium.Icon(color="darkblue", icon="home", prefix="glyphicon"),
+            tooltip=f"🏨 {acc['name']}  {stars_s}  (Days {ci}–{co})",
+            icon=folium.DivIcon(
+                html=acc_marker_html,
+                icon_size=(60, 52),
+                icon_anchor=(30, 52),
+            ),
         ).add_to(acc_fg)
     acc_fg.add_to(m)
 
