@@ -714,15 +714,18 @@ def build_map(data: dict) -> folium.Map:
                     f"{route_nxt['drive_mins']} min drive"
                 )
 
-            # Numbered circle marker with type emoji badge
+            # Emoji circle marker + small number badge in top-right corner
             marker_html = f"""
-            <div style="position:relative;width:36px;height:44px">
-              <div style="background:{color};color:white;border-radius:50%;
-                          width:30px;height:30px;text-align:center;line-height:30px;
-                          font-weight:bold;font-size:14px;border:2px solid white;
-                          box-shadow:0 2px 6px rgba(0,0,0,.5)">{stop_num}</div>
-              <div style="position:absolute;bottom:0;right:0;font-size:15px;
-                          line-height:1;filter:drop-shadow(0 1px 1px white)">{emoji}</div>
+            <div style="position:relative;width:40px;height:40px">
+              <div style="background:{color};border-radius:50%;width:34px;height:34px;
+                          text-align:center;line-height:34px;font-size:18px;
+                          border:2px solid white;
+                          box-shadow:0 2px 6px rgba(0,0,0,.45)">{emoji}</div>
+              <div style="position:absolute;top:-4px;right:-2px;
+                          background:white;color:{color};border:2px solid {color};
+                          border-radius:50%;width:17px;height:17px;
+                          text-align:center;line-height:15px;font-size:10px;
+                          font-weight:bold;box-shadow:0 1px 3px rgba(0,0,0,.3)">{stop_num}</div>
             </div>"""
 
             folium.Marker(
@@ -741,8 +744,8 @@ def build_map(data: dict) -> folium.Map:
                 tooltip=f"Day {day['day_number']} #{stop_num}: {loc['name']}",
                 icon=folium.DivIcon(
                     html=marker_html,
-                    icon_size=(36, 44),
-                    icon_anchor=(15, 44),
+                    icon_size=(40, 40),
+                    icon_anchor=(19, 36),
                 ),
             ).add_to(fg)
 
@@ -766,10 +769,10 @@ def build_map(data: dict) -> folium.Map:
             pl.add_to(fg)
             PolyLineTextPath(
                 pl,
-                "►",
+                "   ›   ",
                 repeat=True,
-                offset=10,
-                attributes={"fill": color, "font-size": "14", "font-weight": "bold"},
+                offset=8,
+                attributes={"fill": color, "font-size": "16", "opacity": "0.7"},
             ).add_to(fg)
 
         fg.add_to(m)
