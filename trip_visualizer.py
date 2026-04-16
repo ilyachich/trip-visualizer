@@ -35,6 +35,7 @@ from pathlib import Path
 
 from groq import Groq
 import folium
+from folium.plugins import PolyLineTextPath
 import requests
 
 # ---------------------------------------------------------------------------
@@ -692,20 +693,18 @@ def build_map(data: dict) -> folium.Map:
 
         sorted_locs = sorted(day.get("locations", []), key=lambda x: x.get("order", 99))
 
+        stop_num = 0
         for loc in sorted_locs:
             coords = loc.get("_coords")
             if not coords:
                 continue
+            stop_num += 1
             day_coords.append(coords)
 
             loc_type  = loc.get("type", "default")
-            cfg       = TYPE_CONFIG.get(loc_type, TYPE_CONFIG["default"])
             emoji     = TYPE_EMOJI.get(loc_type, TYPE_EMOJI["default"])
-            # For transport, override icon and emoji based on transport_mode
             if loc_type == "transport":
-                mode = (loc.get("transport_mode") or "train").lower()
-                mode_cfg = TRANSPORT_MODE_CONFIG.get(mode, TRANSPORT_MODE_CONFIG["train"])
-                cfg   = {"icon": mode_cfg["icon"], "color": mode_cfg["color"], "prefix": "fa"}
+                mode  = (loc.get("transport_mode") or "train").lower()
                 emoji = TRANSPORT_MODE_EMOJI.get(mode, "🚆")
             route_nxt = loc.get("_route_to_next")
 
@@ -715,11 +714,22 @@ def build_map(data: dict) -> folium.Map:
                     f"{route_nxt['drive_mins']} min drive"
                 )
 
+            # Numbered circle marker with type emoji badge
+            marker_html = f"""
+            <div style="position:relative;width:36px;height:44px">
+              <div style="background:{color};color:white;border-radius:50%;
+                          width:30px;height:30px;text-align:center;line-height:30px;
+                          font-weight:bold;font-size:14px;border:2px solid white;
+                          box-shadow:0 2px 6px rgba(0,0,0,.5)">{stop_num}</div>
+              <div style="position:absolute;bottom:0;right:0;font-size:15px;
+                          line-height:1;filter:drop-shadow(0 1px 1px white)">{emoji}</div>
+            </div>"""
+
             folium.Marker(
                 location=coords,
                 popup=_popup_html(
                     f"{emoji} {loc['name']}",
-                    f"Day {day['day_number']} · {loc_type.title()}",
+                    f"Day {day['day_number']} · Stop {stop_num} · {loc_type.title()}",
                     loc.get("description", ""),
                     highlights  = loc.get("highlights"),
                     tips        = loc.get("tips"),
@@ -728,15 +738,15 @@ def build_map(data: dict) -> folium.Map:
                     image_url   = loc.get("_image_url"),
                     route       = route_nxt,
                 ),
-                tooltip=f"Day {day['day_number']}: {loc['name']}",
-                icon=folium.Icon(
-                    color=cfg["color"],
-                    icon=cfg["icon"],
-                    prefix=cfg["prefix"],
+                tooltip=f"Day {day['day_number']} #{stop_num}: {loc['name']}",
+                icon=folium.DivIcon(
+                    html=marker_html,
+                    icon_size=(36, 44),
+                    icon_anchor=(15, 44),
                 ),
             ).add_to(fg)
 
-        # Dashed route line for the day
+        # Route line with direction arrows
         if len(day_coords) >= 2:
             total_km   = sum(s.get("km", 0) for s in
                              [l.get("_route_to_next") or {} for l in sorted_locs if l.get("_coords")])
@@ -746,13 +756,20 @@ def build_map(data: dict) -> folium.Map:
             if total_km:
                 line_tip += f" — {round(total_km, 1)} km total, ~{total_mins} min drive"
 
-            folium.PolyLine(
+            pl = folium.PolyLine(
                 locations=day_coords,
                 color=color,
-                weight=3,
+                weight=4,
                 opacity=0.85,
                 tooltip=line_tip,
-                dash_array="10 6",
+            )
+            pl.add_to(fg)
+            PolyLineTextPath(
+                pl,
+                "►",
+                repeat=True,
+                offset=10,
+                attributes={"fill": color, "font-size": "14", "font-weight": "bold"},
             ).add_to(fg)
 
         fg.add_to(m)
