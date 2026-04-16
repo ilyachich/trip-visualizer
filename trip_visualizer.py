@@ -821,10 +821,11 @@ def build_map(data: dict) -> folium.Map:
             pl.add_to(fg)
             PolyLineTextPath(
                 pl,
-                "   ›   ",
+                "          ▶          ",
                 repeat=True,
                 offset=8,
-                attributes={"fill": color, "font-size": "16", "opacity": "0.7"},
+                attributes={"fill": color, "font-size": "18", "font-weight": "bold",
+                            "opacity": "0.9"},
             ).add_to(fg)
 
         fg.add_to(m)
