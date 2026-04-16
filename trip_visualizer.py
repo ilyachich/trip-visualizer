@@ -685,8 +685,17 @@ def build_map(data: dict) -> folium.Map:
 
     accommodations = data.get("accommodations", [])
 
-    def overnight_hotel(day_num: int) -> dict | None:
-        """Return the accommodation where the traveller sleeps on night day_num."""
+    def morning_hotel(day_num: int) -> dict | None:
+        """Hotel the traveller WAKES UP IN on day_num (slept there night day_num-1→day_num)."""
+        for acc in accommodations:
+            ci = acc.get("check_in_day") or 0
+            co = acc.get("check_out_day") or 0
+            if ci < day_num <= co and acc.get("_coords"):
+                return acc
+        return None
+
+    def night_hotel(day_num: int) -> dict | None:
+        """Hotel the traveller SLEEPS IN tonight (night day_num→day_num+1)."""
         for acc in accommodations:
             ci = acc.get("check_in_day") or 0
             co = acc.get("check_out_day") or 0
@@ -710,7 +719,7 @@ def build_map(data: dict) -> folium.Map:
         sorted_locs = sorted(day.get("locations", []), key=lambda x: x.get("order", 99))
 
         # ── Overnight hotel as day start ──────────────────────────────────
-        hotel = overnight_hotel(day["day_number"])
+        hotel = morning_hotel(day["day_number"])
         if hotel and not hotel_already_in_locs(hotel, sorted_locs):
             hc = hotel["_coords"]
             day_coords.append(hc)
@@ -800,6 +809,11 @@ def build_map(data: dict) -> folium.Map:
                     icon_anchor=(19, 36),
                 ),
             ).add_to(fg)
+
+        # ── Return-to-hotel line at end of day ───────────────────────────
+        end_hotel = night_hotel(day["day_number"])
+        if end_hotel and not hotel_already_in_locs(end_hotel, sorted_locs):
+            day_coords.append(end_hotel["_coords"])
 
         # Route line with direction arrows
         if len(day_coords) >= 2:
