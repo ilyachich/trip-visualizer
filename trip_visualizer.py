@@ -28,6 +28,7 @@ from __future__ import annotations
 import argparse
 import html as html_lib
 import json
+import os
 import re
 import sys
 import time
@@ -98,7 +99,139 @@ TYPE_EMOJI = {
 }
 
 # ---------------------------------------------------------------------------
-# Claude parsing
+# Vacation Trip Planner (interactive trip planning)
+# ---------------------------------------------------------------------------
+
+NATURE_PLANNER_SYSTEM_PROMPT = """\
+You are Vacation Trip Planner, an expert travel planner specializing in \
+nature-focused, efficient, and realistic itineraries.
+
+CORE PRINCIPLES:
+- Minimize driving: default max 1–1.5 hours per day
+- Limit accommodation changes: 2 base locations for 5–8 day trips
+- Focus on nature: lakes, mountains, waterfalls, forests, scenic drives
+- Prefer hidden gems over overcrowded tourist spots
+- Mix active and relaxed days
+- Recommend local restaurants and authentic experiences
+
+BEHAVIOR:
+- If key details are missing, ask 3–5 concise clarifying questions BEFORE generating
+- After collecting answers, briefly confirm your plan assumptions (2–3 bullet points)
+- When user confirms, generate the full itinerary
+- Never suggest unrealistic driving times or rushed plans
+
+QUESTIONS TO CONSIDER ASKING (pick the most relevant 3–5):
+- Destination / country or region
+- Trip duration (number of days)
+- Travel season or dates
+- Group composition (solo, couple, family with children, etc.)
+- Activity level (relaxed, moderate, active/hiking)
+- Must-have activities (rafting, cycling, swimming, etc.)
+- Accommodation preference (budget, mid-range, luxury)
+- Starting/ending city
+
+ITINERARY FORMAT — use exactly this structure when generating the final itinerary:
+
+[Trip Name] – [N] Days ([Region, Country])
+
+Accommodations:
+- [Hotel Name], [City], [Country]: Days [check-in]–[check-out]
+
+Day 1 – [City or Theme]
+[Morning/afternoon/evening activities. Use real, geocodable place names.]
+Check in to [Hotel Name] in [City].
+[Dinner/lunch at specific named restaurant], [City].
+
+Day 2 – [Theme]
+[Activities with real place names, brief descriptions, transport modes if relevant.]
+
+(Repeat for all days. Always use specific, real place names that can be found on a map.)
+"""
+
+
+def run_nature_planner(api_key: str | None = None) -> str:
+    """Interactive Vacation Trip Planner — returns a trip itinerary as plain text."""
+    key = api_key or os.environ.get("GROQ_API_KEY")
+    if not key:
+        print(
+            "Error: Groq API key not found.\n"
+            "  Get a free key at https://console.groq.com\n"
+            "  Then run:  setx GROQ_API_KEY \"your-key-here\"  (open a new terminal after)",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    client = Groq(api_key=key)
+    messages: list[dict] = [{"role": "system", "content": NATURE_PLANNER_SYSTEM_PROMPT}]
+
+    print("\n" + "=" * 60)
+    print("  🌿  Vacation Trip Planner")
+    print("=" * 60)
+    print("Describe your ideal trip. Examples:")
+    print("  7-day nature trip in Slovenia, couple, moderate hiking")
+    print("  Hidden lakes and mountains in Austria, 5 days, relaxed")
+    print()
+
+    user_input = input("Your trip idea: ").strip()
+    if not user_input:
+        print("No input provided.", file=sys.stderr)
+        sys.exit(1)
+
+    messages.append({"role": "user", "content": user_input})
+
+    # ── Turn 1: clarifying questions ──────────────────────────────────────
+    print("\nThinking…")
+    resp = client.chat.completions.create(
+        model="llama-3.3-70b-versatile",
+        messages=messages,
+        max_tokens=1024,
+    )
+    reply = resp.choices[0].message.content.strip()
+    messages.append({"role": "assistant", "content": reply})
+    print(f"\n{reply}\n")
+
+    answers = input("Your answers: ").strip()
+    if not answers:
+        answers = "Please proceed with reasonable assumptions."
+    messages.append({"role": "user", "content": answers})
+
+    # ── Turn 2: plan summary / confirmation ───────────────────────────────
+    print("\nPreparing your plan…")
+    resp = client.chat.completions.create(
+        model="llama-3.3-70b-versatile",
+        messages=messages,
+        max_tokens=1024,
+    )
+    reply = resp.choices[0].message.content.strip()
+    messages.append({"role": "assistant", "content": reply})
+    print(f"\n{reply}\n")
+
+    confirm = input("Proceed? (press Enter to confirm, or describe changes): ").strip()
+    if confirm.lower() in ("", "yes", "y", "ok", "sure", "go", "proceed"):
+        messages.append({"role": "user", "content": "Yes, generate the full detailed itinerary now."})
+    else:
+        messages.append({"role": "user", "content": f"{confirm}. Now generate the full detailed itinerary."})
+
+    # ── Turn 3: full itinerary ────────────────────────────────────────────
+    print("\nGenerating your itinerary…")
+    resp = client.chat.completions.create(
+        model="llama-3.3-70b-versatile",
+        messages=messages,
+        max_tokens=4096,
+    )
+    itinerary = resp.choices[0].message.content.strip()
+
+    print("\n" + "=" * 60)
+    print("  📋  Generated Itinerary")
+    print("=" * 60)
+    print(itinerary)
+    print("=" * 60 + "\n")
+
+    return itinerary
+
+
+# ---------------------------------------------------------------------------
+# Trip text parsing
 # ---------------------------------------------------------------------------
 
 SYSTEM_PROMPT = """You are a travel itinerary parser. Extract structured data from trip descriptions.
@@ -162,7 +295,6 @@ Rules:
 
 def parse_trip(text: str, api_key: str | None = None) -> dict:
     """Call Groq (free tier) to turn free-form trip text into structured JSON."""
-    import os
     key = api_key or os.environ.get("GROQ_API_KEY")
     if not key:
         print(
@@ -717,6 +849,7 @@ def build_map(data: dict) -> folium.Map:
         route_segments: list[str] = []
 
         sorted_locs = sorted(day.get("locations", []), key=lambda x: x.get("order", 99))
+        stop_num = 0  # resets to 1 for each day's first attraction
 
         # ── Overnight hotel as day start ──────────────────────────────────
         hotel = morning_hotel(day["day_number"])
@@ -754,12 +887,10 @@ def build_map(data: dict) -> folium.Map:
                 ),
             ).add_to(fg)
 
-        stop_num = 0
         for loc in sorted_locs:
             coords = loc.get("_coords")
             if not coords:
                 continue
-            stop_num += 1
             day_coords.append(coords)
 
             loc_type  = loc.get("type", "default")
@@ -775,45 +906,68 @@ def build_map(data: dict) -> folium.Map:
                     f"{route_nxt['drive_mins']} min drive"
                 )
 
-            # Emoji circle marker + small number badge in top-right corner
-            marker_html = f"""
-            <div style="position:relative;width:40px;height:40px">
-              <div style="background:{color};border-radius:50%;width:34px;height:34px;
-                          text-align:center;line-height:34px;font-size:18px;
-                          border:2px solid white;
-                          box-shadow:0 2px 6px rgba(0,0,0,.45)">{emoji}</div>
-              <div style="position:absolute;top:-4px;right:-2px;
-                          background:white;color:{color};border:2px solid {color};
-                          border-radius:50%;width:17px;height:17px;
-                          text-align:center;line-height:15px;font-size:10px;
-                          font-weight:bold;box-shadow:0 1px 3px rgba(0,0,0,.3)">{stop_num}</div>
-            </div>"""
-
-            folium.Marker(
-                location=coords,
-                popup=_popup_html(
-                    f"{emoji} {loc['name']}",
-                    f"Day {day['day_number']} · Stop {stop_num} · {loc_type.title()}",
-                    loc.get("description", ""),
-                    highlights  = loc.get("highlights"),
-                    tips        = loc.get("tips"),
-                    cuisine     = loc.get("cuisine"),
-                    price_range = loc.get("price_range"),
-                    image_url   = loc.get("_image_url"),
-                    route       = route_nxt,
-                ),
-                tooltip=f"Day {day['day_number']} #{stop_num}: {loc['name']}",
-                icon=folium.DivIcon(
-                    html=marker_html,
-                    icon_size=(40, 40),
-                    icon_anchor=(19, 36),
-                ),
-            ).add_to(fg)
-
-        # ── Return-to-hotel line at end of day ───────────────────────────
-        end_hotel = night_hotel(day["day_number"])
-        if end_hotel and not hotel_already_in_locs(end_hotel, sorted_locs):
-            day_coords.append(end_hotel["_coords"])
+            if loc_type == "hotel":
+                # Hotel stop in the daily itinerary — use hotel marker, no number
+                marker_html = f"""
+                <div style="position:relative;width:40px;height:40px">
+                  <div style="background:white;border-radius:50%;width:34px;height:34px;
+                              text-align:center;line-height:34px;font-size:18px;
+                              border:3px dashed {color};
+                              box-shadow:0 2px 5px rgba(0,0,0,.35)">🏨</div>
+                </div>"""
+                folium.Marker(
+                    location=coords,
+                    popup=_popup_html(
+                        f"🏨 {loc['name']}",
+                        f"Day {day['day_number']} · Hotel",
+                        loc.get("description", ""),
+                        highlights = loc.get("highlights"),
+                        tips       = loc.get("tips"),
+                        image_url  = loc.get("_image_url"),
+                        route      = route_nxt,
+                    ),
+                    tooltip=f"🏨 Day {day['day_number']}: {loc['name']}",
+                    icon=folium.DivIcon(
+                        html=marker_html,
+                        icon_size=(40, 40),
+                        icon_anchor=(19, 36),
+                    ),
+                ).add_to(fg)
+            else:
+                stop_num += 1
+                # Emoji circle marker + global number badge in top-right corner
+                marker_html = f"""
+                <div style="position:relative;width:40px;height:40px">
+                  <div style="background:{color};border-radius:50%;width:34px;height:34px;
+                              text-align:center;line-height:34px;font-size:18px;
+                              border:2px solid white;
+                              box-shadow:0 2px 6px rgba(0,0,0,.45)">{emoji}</div>
+                  <div style="position:absolute;top:-4px;right:-2px;
+                              background:white;color:{color};border:2px solid {color};
+                              border-radius:50%;width:17px;height:17px;
+                              text-align:center;line-height:15px;font-size:10px;
+                              font-weight:bold;box-shadow:0 1px 3px rgba(0,0,0,.3)">{stop_num}</div>
+                </div>"""
+                folium.Marker(
+                    location=coords,
+                    popup=_popup_html(
+                        f"{emoji} {loc['name']}",
+                        f"Day {day['day_number']} · #{stop_num} · {loc_type.title()}",
+                        loc.get("description", ""),
+                        highlights  = loc.get("highlights"),
+                        tips        = loc.get("tips"),
+                        cuisine     = loc.get("cuisine"),
+                        price_range = loc.get("price_range"),
+                        image_url   = loc.get("_image_url"),
+                        route       = route_nxt,
+                    ),
+                    tooltip=f"#{stop_num}  {loc['name']}",
+                    icon=folium.DivIcon(
+                        html=marker_html,
+                        icon_size=(40, 40),
+                        icon_anchor=(19, 36),
+                    ),
+                ).add_to(fg)
 
         # Route line with direction arrows
         if len(day_coords) >= 2:
@@ -835,11 +989,11 @@ def build_map(data: dict) -> folium.Map:
             pl.add_to(fg)
             PolyLineTextPath(
                 pl,
-                "          ▶          ",
+                "                         ▶                         ",
                 repeat=True,
                 offset=8,
-                attributes={"fill": color, "font-size": "18", "font-weight": "bold",
-                            "opacity": "0.9"},
+                attributes={"fill": color, "font-size": "16", "font-weight": "bold",
+                            "opacity": "0.75"},
             ).add_to(fg)
 
         fg.add_to(m)
@@ -951,11 +1105,24 @@ def build_map(data: dict) -> folium.Map:
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Visualise a trip description as an interactive map."
+        description="Visualise a trip description as an interactive map.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=(
+            "Examples:\n"
+            "  python trip_visualizer.py my_trip.txt\n"
+            "  python trip_visualizer.py --plan\n"
+            "  python trip_visualizer.py my_trip.txt -o map.html --json-output parsed.json"
+        ),
     )
     parser.add_argument(
         "input",
-        help="Path to trip text file, or '-' to read from stdin.",
+        nargs="?",
+        help="Path to trip text file, or '-' to read from stdin. Omit when using --plan.",
+    )
+    parser.add_argument(
+        "--plan",
+        action="store_true",
+        help="Interactively plan a nature trip with Vacation Trip Planner, then map it.",
     )
     parser.add_argument(
         "--output", "-o",
@@ -973,16 +1140,21 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    # Read trip text
-    if args.input == "-":
-        print("Reading from stdin…", file=sys.stderr)
-        text = sys.stdin.read()
+    # Read or generate trip text
+    if args.plan:
+        text = run_nature_planner(api_key=args.api_key)
+    elif args.input:
+        if args.input == "-":
+            print("Reading from stdin…", file=sys.stderr)
+            text = sys.stdin.read()
+        else:
+            path = Path(args.input)
+            if not path.exists():
+                print(f"Error: file not found — {path}", file=sys.stderr)
+                sys.exit(1)
+            text = path.read_text(encoding="utf-8")
     else:
-        path = Path(args.input)
-        if not path.exists():
-            print(f"Error: file not found — {path}", file=sys.stderr)
-            sys.exit(1)
-        text = path.read_text(encoding="utf-8")
+        parser.error("Provide an input file or use --plan for interactive trip planning.")
 
     if not text.strip():
         print("Error: input is empty.", file=sys.stderr)
