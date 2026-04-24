@@ -1,57 +1,30 @@
-# Trip Visualizer
+# Trip Visualizer & Vacation Trip Planner
 
 Turn any free-text trip description into an interactive map — day by day, completely free.
+Or use the **Streamlit web app** to plan a trip from scratch with AI.
 
-## What it does
+---
 
-Paste your trip notes (hotels, restaurants, sights, day by day) and get back a single HTML file you can open in any browser:
+## Two ways to use it
 
-- **Per-day colour-coded routes** — numbered stops (1, 2, 3…) with direction arrows showing travel order
-- **Typed markers** — 🏨 hotels, 🍴 restaurants, 🎯 activities, 🏛️ sights, ✈️ airports, 🚂 trains, 🚌 buses, 🚇 metro, 🚢 ships
-- **Overnight hotel as day start** — each day's route begins at the hotel where you slept (🌙 marker), even if not explicitly in the text
-- **Return-to-hotel line** — route closes back to the night's hotel at the end of each day
-- **Accommodation layer** — hotel badge markers (offset to avoid overlap) with stars, check-in/out days
-- **Distances & travel times** — "To [Place]: X km | 🚗 12 min · 🚇 ~16 min" between every stop
-- **Place photos** — Wikipedia thumbnail in every popup, click to enlarge
-- **Rich popups** — highlights, practical tips, cuisine, price range, hotel stars and amenities
-- **📋 Itinerary panel** — left-side button opens a full side panel with the complete trip day by day
-- **Google Maps base layer** — road map by default, switchable to Google Satellite
-- **Auto-zoom** — map fits exactly to the travel area
-- **Country-aware geocoding** — restricts search to the correct country, preventing wrong-location matches
-- **Region & country** in the legend
+### 1. Streamlit Web App — plan a trip with AI
 
-## Cost
-
-| Service | Cost |
-|---|---|
-| Groq / Llama 3.3 70B (AI parsing) | Free |
-| OpenStreetMap geocoding | Free |
-| OSRM routing (distances & times) | Free |
-| Wikipedia images | Free |
-| Folium map rendering | Free |
-| **Total** | **$0** |
-
-## Setup
-
-### 1. Install Python dependencies
+Run the interactive planner in your browser:
 
 ```
-pip install folium groq requests
+streamlit run app.py
 ```
 
-### 2. Get a free Groq API key
+- Fill in ~20 travel preferences (destination, dates, pace, budget, accommodation, food, …)
+- AI (Groq / Llama 3.3 70B) generates a full day-by-day itinerary
+- A mountain hiker animation plays while the map is built in the background
+- Get a colour-coded interactive map + structured itinerary ready to download
 
-Go to **https://console.groq.com** → sign in → API Keys → Create API key.
+**Requirements:** set `GROQ_API_KEY` in environment or Streamlit secrets.
 
-### 3. Save the key (Windows)
+### 2. CLI — visualise an existing trip description
 
-```
-setx GROQ_API_KEY "your-key-here"
-```
-
-Open a new terminal after running this.
-
-## Usage
+Paste your trip notes into a text file and get a map:
 
 ```
 python trip_visualizer.py my_trip.txt
@@ -59,7 +32,71 @@ python trip_visualizer.py my_trip.txt -o paris.html
 python trip_visualizer.py my_trip.txt -o paris.html --json-output parsed.json
 ```
 
-### Arguments
+---
+
+## What the map includes
+
+- **Per-day colour-coded routes** — numbered stops (1, 2, 3… reset each day) with direction arrows
+- **Hotel-first routing** — each day starts at the overnight hotel (🌙), then visits attractions in order
+- **Typed markers** — 🏨 hotels, 🍴 restaurants, 🎯 activities, 🏛️ sights, ✈️ airports, 🚂 trains, 🚌 buses, 🚇 metro, 🚢 ships
+- **Accommodation layer** — hotel badge markers with stars, check-in/out days (offset to avoid overlap)
+- **Distances & travel times** — "To [Place]: X km | 🚗 12 min" between every stop
+- **Place photos** — Wikipedia thumbnail in every popup
+- **Rich popups** — highlights, practical tips, cuisine, price range, hotel stars and amenities
+- **Itinerary panel** — left-side button opens a full side panel with the complete trip
+- **Google Maps base layer** — road map by default, switchable to satellite
+- **Auto-zoom** — map fits exactly to the travel area
+
+---
+
+## Cost
+
+| Service | Cost |
+|---|---|
+| Groq / Llama 3.3 70B (AI parsing + planning) | Free |
+| OpenStreetMap geocoding | Free |
+| OSRM routing (distances & times) | Free |
+| Wikipedia images | Free |
+| Folium map rendering | Free |
+| **Total** | **$0** |
+
+---
+
+## Setup
+
+### 1. Install dependencies
+
+```
+pip install -r requirements.txt
+```
+
+or manually:
+
+```
+pip install folium groq requests streamlit
+```
+
+### 2. Get a free Groq API key
+
+Go to **https://console.groq.com** → sign in → API Keys → Create API key.
+
+### 3. Save the key
+
+**Windows:**
+```
+setx GROQ_API_KEY "your-key-here"
+```
+
+**Mac / Linux:**
+```
+export GROQ_API_KEY="your-key-here"
+```
+
+Open a new terminal after running `setx` on Windows.
+
+---
+
+## CLI arguments
 
 | Argument | Description |
 |---|---|
@@ -68,17 +105,18 @@ python trip_visualizer.py my_trip.txt -o paris.html --json-output parsed.json
 | `--json-output file.json` | Also save the parsed itinerary as JSON |
 | `--api-key KEY` | Pass the Groq API key directly instead of env var |
 
-## Example input
-
-See [example_trip.txt](example_trip.txt) for a sample 7-day Japan itinerary.
+---
 
 ## How it works
 
-1. **Parse** — Groq (Llama 3.3 70B) reads your text and extracts days, locations, transport modes, accommodations, highlights, tips, cuisine, hotel stars, and more
-2. **Geocode** — Each place is looked up on OpenStreetMap, restricted to the correct country
-3. **Route** — OSRM calculates driving distance and time between consecutive stops each day
-4. **Images** — Wikipedia search API finds thumbnails for each location
-5. **Render** — Folium builds an interactive Leaflet.js map saved as a self-contained HTML file
+1. **Plan** *(web app only)* — Groq generates a full itinerary from your preferences
+2. **Parse** — Groq (Llama 3.3 70B) extracts days, locations, transport modes, accommodations, highlights, tips, cuisine, hotel stars, and more
+3. **Geocode** — Each place is looked up on OpenStreetMap, restricted to the correct country
+4. **Route** — OSRM calculates driving distance and time between consecutive stops each day
+5. **Images** — Wikipedia search API finds thumbnails for each location
+6. **Render** — Folium builds an interactive Leaflet.js map saved as a self-contained HTML file
+
+---
 
 ## Map controls
 
