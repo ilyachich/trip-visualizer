@@ -32,6 +32,7 @@ import os
 import re
 import sys
 import time
+import urllib.parse
 from pathlib import Path
 
 from groq import Groq
@@ -176,7 +177,11 @@ Schema:
           "cuisine": "cuisine type if restaurant, else null",
           "price_range": "$ | $$ | $$$ | $$$$ for restaurants/paid activities, else null",
           "address": "full address including city and country",
-          "order": 1
+          "order": 1,
+          "trail_distance_km": null,
+          "elevation_gain_m": null,
+          "difficulty": null,
+          "duration_hours": null
         }
       ]
     }
@@ -197,16 +202,21 @@ Schema:
 Rules:
 - Use real, searchable, geocodable place names (e.g. "Bled Castle, Bled, Slovenia" not "the castle")
 - Every address MUST include city and country — required for map pin placement
+- Include AT LEAST 5 locations per day: hotel + 2 or more sights/activities + 1 restaurant minimum; active/hiking days should have 5-7 entries
+- Day 1 MUST include: arrival transport or hotel check-in, at least 2 named local attractions near the arrival city, and at least 1 restaurant — all with geocodable addresses in that city
+- Hiking and trekking activities MUST fill trail_distance_km (numeric km), elevation_gain_m (numeric m), difficulty (easy/moderate/hard/expert), duration_hours (numeric hours) — these are shown in the map popup and trail links are generated from them
+- For non-hiking locations, leave trail_distance_km/elevation_gain_m/difficulty/duration_hours as null
 - Minimize accommodation changes: 2–3 hotels max for a week-long trip
 - Set check_in_day / check_out_day correctly for each hotel
 - order = chronological visit sequence within a day, starting at 1
-- Types: hotel=accommodation, restaurant=dining, activity=tours/experiences, poi=sight/landmark, transport=airport/station
+- Types: hotel=accommodation, restaurant=dining, activity=tours/experiences/hiking, poi=sight/landmark, transport=airport/station
 - transport_mode only for transport entries: plane|train|bus|metro|ship|taxi|car|bicycle
 - Include hotels in each day's locations list (for a complete route), AND in accommodations separately
 - Keep driving time per day within the specified maximum
 - Fill highlights, tips, cuisine, stars, amenities from your knowledge — these enrich the map popups
 - Generate exactly the requested number of days
-- Prefer specific named places over generic descriptions
+- Prefer specific named trails, peaks, viewpoints, and local restaurants over generic descriptions
+- For hiking: name the specific trail (e.g. "Triglav Summit Trail via Kredarica Hut") not just "hiking"
 """
 
 
@@ -717,6 +727,11 @@ def _popup_html(
     amenities: str | None = None,
     image_url: str | None = None,
     route: dict | None = None,
+    trail_distance_km: float | None = None,
+    elevation_gain_m: int | None = None,
+    difficulty: str | None = None,
+    duration_hours: float | None = None,
+    alltrails_url: str | None = None,
 ) -> folium.Popup:
     img_html = ""
     if image_url:
@@ -742,6 +757,40 @@ def _popup_html(
         extra_rows += f'<div style="margin-top:4px;font-size:11px;color:#888">🍴 {label}</div>'
     if amenities:
         extra_rows += f'<div style="margin-top:4px;font-size:11px;color:#888">🏷 {amenities}</div>'
+
+    # Hiking stats block
+    if any(v is not None for v in (trail_distance_km, elevation_gain_m, difficulty, duration_hours)):
+        diff_color = {"easy": "#27ae60", "moderate": "#f39c12",
+                      "hard": "#e74c3c", "expert": "#8e44ad"}.get(
+            (difficulty or "").lower(), "#555"
+        )
+        parts = []
+        if trail_distance_km is not None:
+            parts.append(f"📏 {trail_distance_km} km")
+        if elevation_gain_m is not None:
+            parts.append(f"⬆ {elevation_gain_m} m gain")
+        if duration_hours is not None:
+            h = int(duration_hours)
+            m = round((duration_hours - h) * 60)
+            parts.append(f"⏱ {h}h{m:02d}" if m else f"⏱ {h}h")
+        stats_line = " &nbsp;·&nbsp; ".join(parts)
+        diff_badge = (
+            f'<span style="background:{diff_color};color:white;border-radius:3px;'
+            f'padding:1px 5px;font-size:10px;font-weight:700;margin-right:4px">'
+            f'{(difficulty or "").upper()}</span>'
+        ) if difficulty else ""
+        extra_rows += (
+            f'<div style="margin-top:6px;padding:5px 7px;background:#f4f8ff;'
+            f'border-radius:4px;font-size:11px;color:#444">'
+            f'{diff_badge}{stats_line}</div>'
+        )
+        if alltrails_url:
+            extra_rows += (
+                f'<div style="margin-top:4px;font-size:11px">'
+                f'<a href="{alltrails_url}" target="_blank" '
+                f'style="color:#00b050;text-decoration:none;font-weight:600">'
+                f'🥾 Find trails on AllTrails ↗</a></div>'
+            )
 
     html = f"""
     <div style="font-family:Arial,sans-serif;min-width:220px;max-width:300px">
@@ -814,6 +863,10 @@ def build_itinerary_panel(data: dict) -> str:
             cuisine    = _e(loc.get("cuisine") or "")
             price      = _e(loc.get("price_range") or "")
             route      = loc.get("_route_to_next")
+            trail_km   = loc.get("trail_distance_km")
+            elev       = loc.get("elevation_gain_m")
+            diff       = _e((loc.get("difficulty") or "").strip())
+            dur_h      = loc.get("duration_hours")
 
             cuisine_line = ""
             if cuisine:
@@ -821,6 +874,37 @@ def build_itinerary_panel(data: dict) -> str:
                 if price:
                     cuisine_line += f" · {price}"
                 cuisine_line += "</span>"
+
+            # Hiking stats line
+            hiking_line = ""
+            if any(v is not None for v in (trail_km, elev, dur_h)) or diff:
+                diff_color = {"easy": "#27ae60", "moderate": "#e67e22",
+                              "hard": "#e74c3c", "expert": "#8e44ad"}.get(
+                    diff.lower(), "#777"
+                )
+                hparts = []
+                if trail_km is not None:
+                    hparts.append(f"📏 {trail_km} km")
+                if elev is not None:
+                    hparts.append(f"⬆ {elev} m gain")
+                if dur_h is not None:
+                    hh, mm = int(dur_h), round((dur_h - int(dur_h)) * 60)
+                    hparts.append(f"⏱ {hh}h{mm:02d}" if mm else f"⏱ {hh}h")
+                diff_badge = (
+                    f'<span style="background:{diff_color};color:white;'
+                    f'border-radius:3px;padding:1px 4px;font-size:10px;'
+                    f'font-weight:700;margin-right:4px">{diff.upper()}</span>'
+                ) if diff else ""
+                at_q  = urllib.parse.quote(f"{loc['name']} {data.get('region','')} {data.get('country','')}")
+                at_url = f"https://www.alltrails.com/explore?q={at_q}"
+                hiking_line = (
+                    f'<div style="font-size:11px;background:#f0f7f0;border-radius:3px;'
+                    f'padding:4px 6px;margin-top:4px">'
+                    f'{diff_badge}{" &nbsp;·&nbsp; ".join(hparts)}'
+                    f'&nbsp;&nbsp;<a href="{at_url}" target="_blank" '
+                    f'style="color:#00b050;font-weight:600;text-decoration:none">'
+                    f'🥾 AllTrails</a></div>'
+                )
 
             route_line = ""
             if route and route.get("km", 0) >= 0.05:
@@ -845,6 +929,7 @@ def build_itinerary_panel(data: dict) -> str:
               {"<div style='font-size:11px;color:#2c7;margin-top:3px'>✨ " + highlights + "</div>" if highlights else ""}
               {"<div style='font-size:11px;color:#27ae60;margin-top:2px'>💡 " + tips + "</div>" if tips else ""}
               {"<div style='font-size:11px;margin-top:2px'>" + cuisine_line + "</div>" if cuisine_line else ""}
+              {hiking_line}
               {route_line}
             </div>"""
 
@@ -1074,6 +1159,14 @@ def build_map(data: dict) -> folium.Map:
                 ).add_to(fg)
             else:
                 stop_num += 1
+                # Build AllTrails search URL for hiking/activity types
+                _at_url = None
+                if loc_type in ("activity",) and loc.get("trail_distance_km") is not None:
+                    _q = urllib.parse.quote(
+                        f"{loc['name']} {data.get('region', '')} {data.get('country', '')}"
+                    )
+                    _at_url = f"https://www.alltrails.com/explore?q={_q}"
+
                 # Emoji circle marker + global number badge in top-right corner
                 marker_html = f"""
                 <div style="position:relative;width:40px;height:40px">
@@ -1093,12 +1186,17 @@ def build_map(data: dict) -> folium.Map:
                         f"{emoji} {loc['name']}",
                         f"Day {day['day_number']} · #{stop_num} · {loc_type.title()}",
                         loc.get("description", ""),
-                        highlights  = loc.get("highlights"),
-                        tips        = loc.get("tips"),
-                        cuisine     = loc.get("cuisine"),
-                        price_range = loc.get("price_range"),
-                        image_url   = loc.get("_image_url"),
-                        route       = route_nxt,
+                        highlights        = loc.get("highlights"),
+                        tips              = loc.get("tips"),
+                        cuisine           = loc.get("cuisine"),
+                        price_range       = loc.get("price_range"),
+                        image_url         = loc.get("_image_url"),
+                        route             = route_nxt,
+                        trail_distance_km = loc.get("trail_distance_km"),
+                        elevation_gain_m  = loc.get("elevation_gain_m"),
+                        difficulty        = loc.get("difficulty"),
+                        duration_hours    = loc.get("duration_hours"),
+                        alltrails_url     = _at_url,
                     ),
                     tooltip=f"#{stop_num}  {loc['name']}",
                     icon=folium.DivIcon(

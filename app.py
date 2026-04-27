@@ -2,9 +2,11 @@
 Vacation Trip Planner — Streamlit web app (dark theme)
 """
 
+import html as _html
 import json
 import os
 import re
+import urllib.parse
 import contextlib
 import io
 import time as _time
@@ -487,51 +489,60 @@ def render_colorized_itinerary(text: str) -> None:
             st.markdown(body)
 
 
+def _esc(v) -> str:
+    """HTML-escape a value so LLM text never breaks the surrounding HTML."""
+    return _html.escape(str(v or ""), quote=False)
+
+
 def render_structured_itinerary(trip_data: dict) -> None:
     """Render parsed trip data in the same visual style as the map's itinerary panel."""
+
+    region  = trip_data.get("region", "")
+    country = trip_data.get("country", "")
+
     # ── Accommodations ──────────────────────────────────────────────────────
     accs = trip_data.get("accommodations", [])
     if accs:
-        st.markdown(
+        acc_html = (
             "<div style='font-weight:700;font-size:.95em;color:#94BDDB;"
             "padding:6px 0;border-bottom:1px solid #1F3D5C;margin-bottom:10px'>"
-            "🏨 Accommodations</div>",
-            unsafe_allow_html=True,
+            "🏨 Accommodations</div>"
         )
         for acc in accs:
-            stars = int(acc.get("stars") or 0)
+            stars   = int(acc.get("stars") or 0)
             stars_s = "★" * stars if stars else ""
-            ci = acc.get("check_in_day", "?")
-            co = acc.get("check_out_day", "?")
-            amenities = acc.get("amenities") or ""
-            st.markdown(f"""
-            <div style="background:rgba(15,29,53,0.7);border:1px solid #1F3D5C;
-                border-radius:8px;padding:10px 14px;margin-bottom:8px">
-                <div style="font-weight:700">🏨 {acc['name']}
-                    {'<span style="color:#f0a500;margin-left:5px">' + stars_s + '</span>' if stars_s else ''}
-                </div>
-                <div style="font-size:.82em;color:#64748B;margin-top:2px">
-                    Check-in Day {ci} · Check-out Day {co}
-                </div>
-                <div style="font-size:.88em;color:#94BDDB;margin-top:3px">
-                    {acc.get('description', '')}
-                </div>
-                {'<div style="font-size:.78em;color:#64748B;margin-top:2px">🏷 ' + amenities + '</div>' if amenities else ''}
-            </div>""", unsafe_allow_html=True)
+            ci      = acc.get("check_in_day", "?")
+            co      = acc.get("check_out_day", "?")
+            amenities = _esc(acc.get("amenities") or "")
+            acc_html += (
+                f'<div style="background:rgba(15,29,53,0.7);border:1px solid #1F3D5C;'
+                f'border-radius:8px;padding:10px 14px;margin-bottom:8px">'
+                f'<div style="font-weight:700">🏨 {_esc(acc["name"])}'
+                f'{"<span style=color:#f0a500;margin-left:5px>" + stars_s + "</span>" if stars_s else ""}'
+                f'</div>'
+                f'<div style="font-size:.82em;color:#64748B;margin-top:2px">'
+                f'Check-in Day {ci} · Check-out Day {co}</div>'
+                f'<div style="font-size:.88em;color:#94BDDB;margin-top:3px">'
+                f'{_esc(acc.get("description", ""))}</div>'
+                f'{"<div style=font-size:.78em;color:#64748B;margin-top:2px>🏷 " + amenities + "</div>" if amenities else ""}'
+                f'</div>'
+            )
+        st.markdown(acc_html, unsafe_allow_html=True)
 
     # ── Days ────────────────────────────────────────────────────────────────
     for i, day in enumerate(trip_data.get("days", [])):
         color     = DAY_COLORS[i % len(DAY_COLORS)]
-        day_label = day.get("label") or f"Day {day['day_number']}"
-        date_s    = day.get("date") or ""
+        day_label = _esc(day.get("label") or f"Day {day['day_number']}")
+        date_s    = _esc(day.get("date") or "")
 
-        # Solid colored header — same style as map panel
-        st.markdown(f"""
-        <div style="background:{color};color:white;padding:8px 16px;
-            border-radius:6px;font-weight:700;font-size:1.05em;margin:20px 0 8px 0">
-            {day_label}
-            {'<span style="opacity:.8;font-size:.85em;margin-left:8px">· ' + date_s + '</span>' if date_s else ''}
-        </div>""", unsafe_allow_html=True)
+        # Build the entire day block as a single HTML string to avoid markdown interference
+        day_html = (
+            f'<div style="background:{color};color:white;padding:8px 16px;'
+            f'border-radius:6px;font-weight:700;font-size:1.05em;margin:20px 0 8px 0">'
+            f'{day_label}'
+            f'{"<span style=opacity:.8;font-size:.85em;margin-left:8px>· " + date_s + "</span>" if date_s else ""}'
+            f'</div>'
+        )
 
         stop_num = 0
         for loc in sorted(day.get("locations", []), key=lambda x: x.get("order", 99)):
@@ -553,47 +564,88 @@ def render_structured_itinerary(trip_data: dict) -> None:
             else:
                 badge = ""
 
-            highlights = loc.get("highlights") or ""
-            tips       = loc.get("tips")       or ""
-            cuisine    = loc.get("cuisine")    or ""
-            price      = loc.get("price_range") or ""
+            highlights = _esc(loc.get("highlights") or "")
+            tips       = _esc(loc.get("tips")       or "")
+            cuisine    = _esc(loc.get("cuisine")    or "")
+            price      = _esc(loc.get("price_range") or "")
+            desc       = _esc(loc.get("description") or "")
+            name       = _esc(loc.get("name", ""))
             route      = loc.get("_route_to_next")
 
-            cuisine_html = ""
+            # Cuisine line
+            cuisine_row = ""
             if cuisine:
-                cuisine_html = f'<div style="font-size:.78em;color:#94BDDB;margin-top:2px">🍴 {cuisine}'
-                if price:
-                    cuisine_html += f" · {price}"
-                cuisine_html += "</div>"
-
-            route_html = ""
-            if route and route.get("km", 0) >= 0.05:
-                km     = route["km"]
-                mins   = route["drive_mins"]
-                raw_n  = route.get("next_name", "next stop")
-                next_n = raw_n[:33] + "…" if len(raw_n) > 35 else raw_n
-                if km < 1.5:
-                    travel = f"🚶 {max(round(km/0.08), 1)} min walk"
-                else:
-                    travel = f"🚗 {mins} min"
-                route_html = (
-                    f'<div style="font-size:.78em;color:#64748B;margin-top:4px">'
-                    f'→ {next_n}: {km} km · {travel}</div>'
+                cuisine_row = (
+                    f'<div style="font-size:.78em;color:#94BDDB;margin-top:2px">'
+                    f'🍴 {cuisine}{" · " + price if price else ""}</div>'
                 )
 
-            st.markdown(f"""
-            <div style="padding:8px 12px 8px 14px;border-left:4px solid {color};
-                background:rgba(15,29,53,0.5);border-radius:0 8px 8px 0;
-                margin-bottom:6px">
-                <div style="font-weight:600">{badge}{emoji} {loc['name']}</div>
-                <div style="font-size:.85em;color:#94BDDB;margin-top:2px">
-                    {loc.get('description', '')}
-                </div>
-                {'<div style="font-size:.78em;color:#34D399;margin-top:3px">✨ ' + highlights + '</div>' if highlights else ''}
-                {'<div style="font-size:.78em;color:#38BDF8;margin-top:2px">💡 ' + tips + '</div>' if tips else ''}
-                {cuisine_html}
-                {route_html}
-            </div>""", unsafe_allow_html=True)
+            # Hiking stats row + AllTrails link
+            hiking_row = ""
+            trail_km = loc.get("trail_distance_km")
+            elev     = loc.get("elevation_gain_m")
+            diff     = _esc((loc.get("difficulty") or "").strip())
+            dur_h    = loc.get("duration_hours")
+            if any(v is not None for v in (trail_km, elev, dur_h)) or diff:
+                diff_color = {"easy": "#27ae60", "moderate": "#e67e22",
+                              "hard": "#e74c3c", "expert": "#8e44ad"}.get(
+                    diff.lower(), "#777"
+                )
+                hparts = []
+                if trail_km is not None:
+                    hparts.append(f"📏 {trail_km} km")
+                if elev is not None:
+                    hparts.append(f"⬆ {elev} m gain")
+                if dur_h is not None:
+                    hh, mm = int(dur_h), round((dur_h - int(dur_h)) * 60)
+                    hparts.append(f"⏱ {hh}h{mm:02d}" if mm else f"⏱ {hh}h")
+                diff_badge = (
+                    f'<span style="background:{diff_color};color:white;border-radius:3px;'
+                    f'padding:1px 5px;font-size:.72em;font-weight:700;margin-right:5px">'
+                    f'{diff.upper()}</span>'
+                ) if diff else ""
+                at_q = urllib.parse.quote(
+                    f"{loc.get('name', '')} {region} {country}"
+                )
+                at_url = f"https://www.alltrails.com/explore?q={at_q}"
+                hiking_row = (
+                    f'<div style="font-size:.78em;background:rgba(0,100,50,0.15);'
+                    f'border-radius:4px;padding:5px 8px;margin-top:5px;color:#a7f3d0">'
+                    f'{diff_badge}{" &nbsp;·&nbsp; ".join(hparts)}'
+                    f'&nbsp;&nbsp;<a href="{at_url}" target="_blank" '
+                    f'style="color:#34D399;font-weight:700;text-decoration:none">'
+                    f'🥾 AllTrails ↗</a></div>'
+                )
+
+            # Route to next stop
+            route_row = ""
+            if route and route.get("km", 0) >= 0.05:
+                km    = route["km"]
+                mins  = route["drive_mins"]
+                raw_n = route.get("next_name", "next stop")
+                next_n = _esc(raw_n[:33] + "…" if len(raw_n) > 35 else raw_n)
+                if km < 1.5:
+                    travel = f"🚶 {max(round(km / 0.08), 1)} min walk"
+                else:
+                    travel = f"🚗 {mins} min"
+                route_row = (
+                    f'<div style="font-size:.75em;color:#475569;margin-top:4px;'
+                    f'padding-top:4px;border-top:1px solid #1F3D5C">'
+                    f'→ To {next_n}: {km} km · {travel}</div>'
+                )
+
+            day_html += (
+                f'<div style="padding:8px 12px 8px 14px;border-left:4px solid {color};'
+                f'background:rgba(15,29,53,0.5);border-radius:0 8px 8px 0;margin-bottom:6px">'
+                f'<div style="font-weight:600">{badge}{emoji} {name}</div>'
+                f'<div style="font-size:.85em;color:#94BDDB;margin-top:2px">{desc}</div>'
+                f'{"<div style=font-size:.78em;color:#34D399;margin-top:3px>✨ " + highlights + "</div>" if highlights else ""}'
+                f'{"<div style=font-size:.78em;color:#38BDF8;margin-top:2px>💡 " + tips + "</div>" if tips else ""}'
+                f'{cuisine_row}{hiking_row}{route_row}'
+                f'</div>'
+            )
+
+        st.markdown(day_html, unsafe_allow_html=True)
 
 
 # ---------------------------------------------------------------------------
