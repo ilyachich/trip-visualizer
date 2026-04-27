@@ -16,8 +16,8 @@ streamlit run app.py
 ```
 
 - Fill in ~20 travel preferences (destination, dates, pace, budget, accommodation, food, …)
-- AI (Groq / Llama 3.3 70B) generates a full day-by-day itinerary
-- A mountain hiker animation plays while the map is built in the background
+- AI (Groq / Llama 3.3 70B) generates a structured JSON itinerary in a single call — the same data drives both the displayed plan and the map, so they are always in sync
+- An animated SVG airplane flies across the screen while the map is built
 - Get a colour-coded interactive map + structured itinerary ready to download
 
 **Requirements:** set `GROQ_API_KEY` in environment or Streamlit secrets.
@@ -111,7 +111,7 @@ Open a new terminal after running `setx` on Windows.
 
 1. **Plan** *(web app only)* — Groq generates a full itinerary from your preferences
 2. **Parse** — Groq (Llama 3.3 70B) extracts days, locations, transport modes, accommodations, highlights, tips, cuisine, hotel stars, and more
-3. **Geocode** — Each place is looked up on OpenStreetMap, restricted to the correct country
+3. **Geocode** — Each place is resolved to coordinates using a 5-level fallback chain: full address → address without country filter → name + country → city + country → bare name (type words stripped). If all attempts fail the pin is placed at city level so every planned stop always appears on the map
 4. **Route** — OSRM calculates driving distance and time between consecutive stops each day
 5. **Images** — Wikipedia search API finds thumbnails for each location
 6. **Render** — Folium builds an interactive Leaflet.js map saved as a self-contained HTML file
