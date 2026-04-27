@@ -433,7 +433,21 @@ def prefs_to_json_prompt(p: dict) -> str:
     if p.get("accommodation"):
         lines.append(f"Accommodation: {', '.join(p['accommodation'])}")
     lines.append(f"Main transport: {p['transport']}")
-    lines.append(f"Max driving per day: {p['max_drive']}")
+    # Convert drive-time option to a concrete km cap so the LLM can enforce it
+    _drive_km = {
+        "Under 30 minutes":                    "under 30 min total (~20 km max between first and last stop)",
+        "30–60 minutes":                        "30–60 min total (~30–50 km between stops)",
+        "1–1.5 hours":                          "1–1.5 h total (~50–80 km between stops)",
+        "1.5–2 hours":                          "1.5–2 h total (~80–110 km between stops)",
+        "2+ hours (fine with long drives)":     "no strict cap — long drives are acceptable",
+    }
+    drive_hint = _drive_km.get(p["max_drive"], p["max_drive"])
+    lines.append(
+        f"Max driving per day: {drive_hint}. "
+        f"CRITICAL — plan all stops for each day within this driving radius. "
+        f"In mountain/rural roads use 45 km/h average speed. "
+        f"Do NOT combine stops from opposite ends of the region in the same day."
+    )
     if p.get("nature_prefs"):
         lines.append(f"Nature interests: {', '.join(p['nature_prefs'])}")
     if p.get("activities"):
@@ -1232,6 +1246,39 @@ elif st.session_state.plan_stage == "done":
         <div style="display:flex;gap:12px;flex-wrap:wrap;">{_stat_html}</div>
     </div>
     """, unsafe_allow_html=True)
+
+    # ── Drive-time warnings ────────────────────────────────────────────────
+    _max_drive = st.session_state.get("plan_prefs", {}).get("max_drive", "")
+    _drive_limits = {
+        "Under 30 minutes": 30,
+        "30–60 minutes": 60,
+        "1–1.5 hours": 90,
+        "1.5–2 hours": 120,
+        "2+ hours (fine with long drives)": 9999,
+    }
+    _limit_mins = _drive_limits.get(_max_drive, 9999)
+    _over = []
+    for _d in _td.get("days", []):
+        _total = sum(
+            (_loc.get("_route_to_next") or {}).get("drive_mins", 0)
+            for _loc in _d.get("locations", [])
+        )
+        if _total > _limit_mins:
+            _over.append(
+                f"<b>{_html.escape(_d.get('label') or f'Day {_d[\"day_number\"]}')}</b>: "
+                f"~{_total} min driving (your limit: {_limit_mins} min)"
+            )
+    if _over:
+        st.markdown(
+            '<div style="background:rgba(234,179,8,0.1);border:1px solid rgba(234,179,8,0.35);'
+            'border-radius:10px;padding:12px 16px;margin-bottom:1rem;font-size:.88em">'
+            '⚠️ <b style="color:#FCD34D">Some days exceed your max drive time</b> '
+            '— the AI may have planned stops too far apart. Consider regenerating or '
+            'adjusting the itinerary manually.<br>'
+            + "<br>".join(f"&nbsp;&nbsp;• {w}" for w in _over)
+            + "</div>",
+            unsafe_allow_html=True,
+        )
 
     col_title, col_btn = st.columns([5, 1])
     with col_title:

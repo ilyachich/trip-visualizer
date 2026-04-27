@@ -213,11 +213,12 @@ Rules:
 - Types: hotel=accommodation, restaurant=dining, activity=tours/experiences/hiking, poi=sight/landmark, transport=airport/station
 - transport_mode only for transport entries: plane|train|bus|metro|ship|taxi|car|bicycle
 - Include hotels in each day's locations list (for a complete route), AND in accommodations separately
-- Keep driving time per day within the specified maximum
+- STRICTLY respect the max driving time: sum of driving between ALL stops in a day must not exceed the limit. In mountain/rural/Balkan roads assume 40–55 km/h average speed — so 1 h = ~50 km, 1.5 h = ~75 km, 2 h = ~100 km. If the max is "Under 30 minutes" keep all stops within 20 km of each other. Never plan stops that are hours of driving apart within a single day.
 - Fill highlights, tips, cuisine, stars, amenities from your knowledge — these enrich the map popups
 - Generate exactly the requested number of days
 - Prefer specific named trails, peaks, viewpoints, and local restaurants over generic descriptions
 - For hiking: name the specific trail (e.g. "Triglav Summit Trail via Kredarica Hut") not just "hiking"
+- Every location address must be geocodable: use the format "Specific Place Name, City/Town, Country" — three comma-separated parts minimum so geocoding fallbacks work correctly
 """
 
 
@@ -594,7 +595,29 @@ def geocode_trip(data: dict) -> dict[str, tuple | None]:
             coords = _region_fallback(data, cache, countrycode, name)
         acc["_coords"] = coords
 
+    _scatter_duplicates(data)
     return cache
+
+
+def _scatter_duplicates(data: dict) -> None:
+    """Offset markers that share identical coordinates so all are visible on the map.
+
+    When geocoding falls back to city/region coords, multiple POIs can land on
+    the same point. Without scattering only the top marker is clickable.
+    Step ≈ 120 m so nearby pins remain visually grouped but individually selectable.
+    """
+    STEP = 0.0011  # ~120 m per step at mid-latitudes
+    for day in data.get("days", []):
+        seen: dict[tuple, int] = {}
+        for loc in sorted(day.get("locations", []), key=lambda x: x.get("order", 99)):
+            c = loc.get("_coords")
+            if not c:
+                continue
+            key = (round(c[0], 4), round(c[1], 4))
+            n = seen.get(key, 0)
+            if n:
+                loc["_coords"] = (c[0] + n * STEP, c[1] + n * STEP * 0.65)
+            seen[key] = n + 1
 
 
 # ---------------------------------------------------------------------------
