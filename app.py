@@ -1264,9 +1264,9 @@ elif st.session_state.plan_stage == "done":
             for _loc in _d.get("locations", [])
         )
         if _total > _limit_mins:
+            _dlabel = _html.escape(_d.get("label") or f"Day {_d['day_number']}")
             _over.append(
-                f"<b>{_html.escape(_d.get('label') or f'Day {_d[\"day_number\"]}')}</b>: "
-                f"~{_total} min driving (your limit: {_limit_mins} min)"
+                f"<b>{_dlabel}</b>: ~{_total} min driving (your limit: {_limit_mins} min)"
             )
     if _over:
         st.markdown(
