@@ -15,8 +15,11 @@ Run the interactive planner in your browser:
 streamlit run app.py
 ```
 
-- Fill in ~20 travel preferences (destination, dates, pace, budget, accommodation, food, …)
-- AI (Groq / Llama 3.3 70B) generates a structured JSON itinerary in a single call — the same data drives both the displayed plan and the map, so they are always in sync
+- Fill in ~20 travel preferences (destination, dates, pace, budget, accommodation, food, hiking level, …)
+- AI (Groq / Llama 3.3 70B) generates a structured JSON itinerary in a **single call** — the same data drives both the displayed plan and the map, so they are always in sync
+- At least 5 locations per day guaranteed: hotel + activities + restaurants + sights
+- Day 1 always includes arrival city attractions so it appears on the map from the start
+- Hiking trips get full trail details: distance, elevation gain, difficulty and an AllTrails search link
 - An animated SVG airplane flies across the screen while the map is built
 - Get a colour-coded interactive map + structured itinerary ready to download
 
@@ -42,10 +45,28 @@ python trip_visualizer.py my_trip.txt -o paris.html --json-output parsed.json
 - **Accommodation layer** — hotel badge markers with stars, check-in/out days (offset to avoid overlap)
 - **Distances & travel times** — "To [Place]: X km | 🚗 12 min" between every stop
 - **Place photos** — Wikipedia thumbnail in every popup
+- **Hiking popup cards** — trail distance, elevation gain, duration, colour-coded difficulty badge (easy / moderate / hard / expert) and an AllTrails search link
 - **Rich popups** — highlights, practical tips, cuisine, price range, hotel stars and amenities
-- **Itinerary panel** — left-side button opens a full side panel with the complete trip
+- **Itinerary panel** — left-side button opens a full side panel with the complete trip; hiking entries show stats and AllTrails link
 - **Google Maps base layer** — road map by default, switchable to satellite
 - **Auto-zoom** — map fits exactly to the travel area
+
+---
+
+## Hiking support
+
+When the trip type includes hiking or trekking, the AI generates:
+
+| Field | Example |
+|---|---|
+| Trail name | "Triglav Summit Trail via Kredarica Hut" |
+| Distance | 📏 16 km |
+| Elevation gain | ⬆ 1 800 m |
+| Duration | ⏱ 9h |
+| Difficulty | **HARD** (colour-coded badge) |
+| Trail link | 🥾 AllTrails ↗ (opens search for that trail) |
+
+These appear in the map popup, the in-map itinerary panel, and the Streamlit itinerary.
 
 ---
 
@@ -53,10 +74,11 @@ python trip_visualizer.py my_trip.txt -o paris.html --json-output parsed.json
 
 | Service | Cost |
 |---|---|
-| Groq / Llama 3.3 70B (AI parsing + planning) | Free |
-| OpenStreetMap geocoding | Free |
+| Groq / Llama 3.3 70B (AI planning) | Free |
+| OpenStreetMap / Nominatim geocoding | Free |
 | OSRM routing (distances & times) | Free |
 | Wikipedia images | Free |
+| AllTrails links | Free (search URL, no API key) |
 | Folium map rendering | Free |
 | **Total** | **$0** |
 
@@ -109,12 +131,11 @@ Open a new terminal after running `setx` on Windows.
 
 ## How it works
 
-1. **Plan** *(web app only)* — Groq generates a full itinerary from your preferences
-2. **Parse** — Groq (Llama 3.3 70B) extracts days, locations, transport modes, accommodations, highlights, tips, cuisine, hotel stars, and more
-3. **Geocode** — Each place is resolved to coordinates using a 5-level fallback chain: full address → address without country filter → name + country → city + country → bare name (type words stripped). If all attempts fail the pin is placed at city level so every planned stop always appears on the map
-4. **Route** — OSRM calculates driving distance and time between consecutive stops each day
-5. **Images** — Wikipedia search API finds thumbnails for each location
-6. **Render** — Folium builds an interactive Leaflet.js map saved as a self-contained HTML file
+1. **Plan** *(web app only)* — a single Groq call turns your 20-question form into structured JSON with at least 5 locations per day; hiking entries include trail stats
+2. **Geocode** — each place is resolved to coordinates using a 5-level fallback chain: full address with country → full address without country filter → name + country → city + country → bare name with type words stripped. If all attempts fail the pin is placed at city level so every planned stop always appears on the map
+3. **Route** — OSRM calculates driving distance and time between consecutive stops each day
+4. **Images** — Wikipedia search API finds thumbnails for each location
+5. **Render** — Folium builds an interactive Leaflet.js map saved as a self-contained HTML file that works offline in any browser
 
 ---
 
@@ -125,6 +146,7 @@ Open a new terminal after running `setx` on Windows.
 | 📋 Itinerary | Opens full trip description panel (left-side button, below zoom controls) |
 | Layer control | Toggle individual days and accommodation layer on/off |
 | Legend | Shows trip name, region, day colours and marker types |
-| Marker click | Opens popup with photo, description, highlights, tips and distance to next stop |
+| Marker click | Opens popup with photo, description, highlights, tips, hiking stats and distance to next stop |
 | Route line hover | Shows day label and total distance |
 | 🌙 marker | Hotel where the day starts (overnight stay) |
+| 🥾 AllTrails ↗ | Link inside hiking activity popups — opens AllTrails search for that trail |
