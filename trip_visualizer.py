@@ -148,6 +148,67 @@ Day 2 – [Theme]
 (Repeat for all days. Always use specific, real place names that can be found on a map.)
 """
 
+# Used by the Streamlit web app — single LLM call that generates JSON directly
+# so the displayed itinerary and the map always come from the same data source.
+TRIP_PLANNER_JSON_PROMPT = """\
+You are an expert travel planner. Given trip preferences, generate a complete, realistic \
+trip itinerary and return it as VALID JSON ONLY — no markdown fences, no explanation, \
+nothing before or after the JSON object.
+
+Schema:
+{
+  "trip_name": "descriptive name, e.g. 'Slovenian Alps & Lakes – 7 Days'",
+  "country": "country name",
+  "region": "city or region name, e.g. 'Ljubljana & Lake Bled' or 'Dolomites'",
+  "days": [
+    {
+      "day_number": 1,
+      "date": null,
+      "label": "Day 1 – City or Theme",
+      "locations": [
+        {
+          "name": "Location Name",
+          "type": "hotel|restaurant|activity|poi|transport",
+          "transport_mode": "plane|train|bus|metro|ship|taxi|car|bicycle — only for transport type, else null",
+          "description": "one-sentence description",
+          "highlights": "2-3 key facts, comma-separated (null if none)",
+          "tips": "one practical tip: opening hours, booking advice (null if none)",
+          "cuisine": "cuisine type if restaurant, else null",
+          "price_range": "$ | $$ | $$$ | $$$$ for restaurants/paid activities, else null",
+          "address": "full address including city and country",
+          "order": 1
+        }
+      ]
+    }
+  ],
+  "accommodations": [
+    {
+      "name": "Hotel Name",
+      "address": "full address including city and country",
+      "check_in_day": 1,
+      "check_out_day": 3,
+      "description": "one-sentence description",
+      "stars": 4,
+      "amenities": "WiFi, Pool, Restaurant (null if unknown)"
+    }
+  ]
+}
+
+Rules:
+- Use real, searchable, geocodable place names (e.g. "Bled Castle, Bled, Slovenia" not "the castle")
+- Every address MUST include city and country — required for map pin placement
+- Minimize accommodation changes: 2–3 hotels max for a week-long trip
+- Set check_in_day / check_out_day correctly for each hotel
+- order = chronological visit sequence within a day, starting at 1
+- Types: hotel=accommodation, restaurant=dining, activity=tours/experiences, poi=sight/landmark, transport=airport/station
+- transport_mode only for transport entries: plane|train|bus|metro|ship|taxi|car|bicycle
+- Include hotels in each day's locations list (for a complete route), AND in accommodations separately
+- Keep driving time per day within the specified maximum
+- Fill highlights, tips, cuisine, stars, amenities from your knowledge — these enrich the map popups
+- Generate exactly the requested number of days
+- Prefer specific named places over generic descriptions
+"""
+
 
 def run_nature_planner(api_key: str | None = None) -> str:
     """Interactive Vacation Trip Planner — returns a trip itinerary as plain text."""
@@ -357,6 +418,30 @@ COUNTRY_CODES: dict[str, str] = {
 }
 
 
+def _nominatim(
+    query: str,
+    countrycode: str | None,
+    headers: dict,
+) -> tuple[float, float] | None:
+    params: dict = {"q": query, "format": "json", "limit": 1}
+    if countrycode:
+        params["countrycodes"] = countrycode
+    try:
+        resp = requests.get(
+            "https://nominatim.openstreetmap.org/search",
+            params=params, headers=headers, timeout=10,
+        )
+        resp.raise_for_status()
+        results = resp.json()
+        if results:
+            return (float(results[0]["lat"]), float(results[0]["lon"]))
+    except Exception:
+        pass
+    finally:
+        time.sleep(1.1)   # Nominatim asks for ≤ 1 req/s
+    return None
+
+
 def geocode(
     address: str,
     cache: dict[str, tuple | None],
@@ -368,26 +453,56 @@ def geocode(
         return cache[cache_key]
 
     headers = {"User-Agent": "TripVisualizer/1.0 (personal travel mapping tool)"}
-    params: dict = {"q": address, "format": "json", "limit": 1}
-    if countrycode:
-        params["countrycodes"] = countrycode
+    parts   = [p.strip() for p in address.split(",") if p.strip()]
 
-    try:
-        resp = requests.get(
-            "https://nominatim.openstreetmap.org/search",
-            params=params, headers=headers, timeout=10,
-        )
-        resp.raise_for_status()
-        results = resp.json()
-        if results:
-            coords = (float(results[0]["lat"]), float(results[0]["lon"]))
-            cache[cache_key] = coords
-            time.sleep(1.1)   # Nominatim asks for ≤ 1 req/s
-            return coords
-    except Exception as exc:
-        print(f"  ⚠  Could not geocode '{address}': {exc}", file=sys.stderr)
+    # Attempt 1: full address + country restriction
+    result = _nominatim(address, countrycode, headers)
 
-    cache[cache_key] = None
+    # Attempt 2: full address, no country restriction
+    if not result and countrycode:
+        result = _nominatim(address, None, headers)
+
+    # Attempt 3: "name, country" (first + last comma-parts)
+    if not result and len(parts) >= 3:
+        result = _nominatim(f"{parts[0]}, {parts[-1]}", None, headers)
+
+    # Attempt 4: city/area level — second-to-last + last parts, e.g. "Mokra Gora, Serbia"
+    if not result and len(parts) >= 2:
+        result = _nominatim(f"{parts[-2]}, {parts[-1]}", countrycode, headers)
+
+    # Attempt 5: bare place name only (strip leading type words like "Restaurant", "Hotel")
+    if not result and parts:
+        _TYPE_WORDS = {"restaurant", "hotel", "hostel", "guesthouse", "museum",
+                       "church", "temple", "palace", "castle", "park", "garden",
+                       "airport", "station", "terminal", "market", "cafe", "bar"}
+        name_words = parts[0].split()
+        stripped   = " ".join(
+            w for w in name_words if w.lower() not in _TYPE_WORDS
+        ).strip()
+        if stripped and stripped != parts[0]:
+            result = _nominatim(stripped, countrycode, headers)
+
+    cache[cache_key] = result
+    if not result:
+        print(f"  ⚠  Could not geocode '{address}'", file=sys.stderr)
+    return result
+
+
+def _city_country_fallback(address: str, name: str, countrycode: str | None,
+                            cache: dict, headers: dict) -> tuple[float, float] | None:
+    """Last-resort: geocode just 'city, country' so the pin at least appears in the right area."""
+    parts = [p.strip() for p in address.split(",") if p.strip()]
+    # Try "city, country" from the address parts
+    if len(parts) >= 2:
+        city_q = f"{parts[-2]}, {parts[-1]}"
+        r = geocode(city_q, cache, countrycode)
+        if r:
+            return r
+    # Try just the place name as-is
+    if name and name not in address:
+        r = geocode(name, cache, countrycode)
+        if r:
+            return r
     return None
 
 
@@ -395,18 +510,37 @@ def geocode_trip(data: dict) -> dict[str, tuple | None]:
     """Geocode every address in the trip data; return filled cache."""
     cache: dict[str, tuple | None] = {}
     countrycode = COUNTRY_CODES.get(data.get("country", "").lower())
+    headers = {"User-Agent": "TripVisualizer/1.0 (personal travel mapping tool)"}
     print("Geocoding locations (Nominatim)…", file=sys.stderr)
 
     for day in data.get("days", []):
         for loc in day.get("locations", []):
             addr = loc.get("address") or loc["name"]
             print(f"  {addr}", file=sys.stderr)
-            loc["_coords"] = geocode(addr, cache, countrycode)
+            coords = geocode(addr, cache, countrycode)
+            # If full address failed, try bare name then city-level fallback
+            if coords is None:
+                name = loc.get("name", "")
+                if name and name != addr:
+                    coords = geocode(name, cache, countrycode)
+                if coords is None and loc.get("address"):
+                    coords = _city_country_fallback(
+                        loc["address"], name, countrycode, cache, headers
+                    )
+                if coords:
+                    print(f"    ↳ approximate pin placed for '{name}'", file=sys.stderr)
+            loc["_coords"] = coords
 
     for acc in data.get("accommodations", []):
         addr = acc.get("address") or acc["name"]
         print(f"  {addr}  (accommodation)", file=sys.stderr)
-        acc["_coords"] = geocode(addr, cache, countrycode)
+        coords = geocode(addr, cache, countrycode)
+        if coords is None and acc.get("address"):
+            name = acc.get("name", "")
+            coords = _city_country_fallback(
+                acc["address"], name, countrycode, cache, headers
+            )
+        acc["_coords"] = coords
 
     return cache
 
@@ -551,11 +685,15 @@ def _route_badge(route: dict | None) -> str:
     if not route:
         return ""
     km        = route["km"]
+    if km < 0.05:
+        return ""
     mins      = route["drive_mins"]
     next_name = route.get("next_name", "next stop")
+    if len(next_name) > 35:
+        next_name = next_name[:33] + "…"
     walk      = round(km / 0.08)  # ~5 km/h walking ≈ 0.083 km/min
     if km < 1.5:
-        travel = f"🚶 {walk} min walk"
+        travel = f"🚶 {max(walk, 1)} min walk"
     else:
         transit = round(mins * 1.35)
         travel  = f"🚗 {mins} min &nbsp;·&nbsp; 🚇 ~{transit} min"
@@ -685,12 +823,13 @@ def build_itinerary_panel(data: dict) -> str:
                 cuisine_line += "</span>"
 
             route_line = ""
-            if route:
-                next_n = _e(route.get("next_name", "next stop"))
+            if route and route.get("km", 0) >= 0.05:
                 km     = route["km"]
                 mins   = route["drive_mins"]
+                raw_n  = route.get("next_name", "next stop")
+                next_n = _e(raw_n[:33] + "…" if len(raw_n) > 35 else raw_n)
                 if km < 1.5:
-                    travel = f"🚶 {round(km/0.08)} min walk"
+                    travel = f"🚶 {max(round(km/0.08), 1)} min walk"
                 else:
                     travel = f"🚗 {mins} min · 🚇 ~{round(mins*1.35)} min"
                 route_line = (

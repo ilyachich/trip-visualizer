@@ -2,6 +2,7 @@
 Vacation Trip Planner — Streamlit web app (dark theme)
 """
 
+import json
 import os
 import re
 import contextlib
@@ -14,11 +15,10 @@ import streamlit.components.v1 as components
 from groq import Groq
 
 from trip_visualizer import (
-    NATURE_PLANNER_SYSTEM_PROMPT,
+    TRIP_PLANNER_JSON_PROMPT,
     DAY_COLORS,
     TYPE_EMOJI,
     TRANSPORT_MODE_EMOJI,
-    parse_trip,
     geocode_trip,
     calculate_routes,
     fetch_wiki_images,
@@ -343,19 +343,32 @@ def _groq_client() -> Groq:
     return Groq(api_key=API_KEY)
 
 
-def groq_chat(messages: list[dict], max_tokens: int = 4096) -> str:
+def _groq_json(messages: list[dict]) -> dict:
+    """Call Groq with TRIP_PLANNER_JSON_PROMPT and return parsed dict."""
     resp = _groq_client().chat.completions.create(
         model="llama-3.3-70b-versatile",
         messages=messages,
-        max_tokens=max_tokens,
+        max_tokens=8192,
     )
-    return resp.choices[0].message.content.strip()
+    raw = resp.choices[0].message.content.strip()
+    raw = re.sub(r"^```(?:json)?\s*", "", raw)
+    raw = re.sub(r"\s*```$", "", raw.strip())
+    return json.loads(raw)
 
 
-def build_map_html(text: str, status_widget=None, t0: float | None = None) -> tuple[str, dict]:
-    """Run full pipeline silently; status_widget is optional (legacy)."""
+def generate_and_build(prefs: dict) -> tuple[str, dict]:
+    """Single LLM call → structured JSON → geocode → route → images → map HTML.
+
+    Keeping everything in one data source eliminates the two-LLM mismatch
+    where the displayed itinerary and the map previously came from different
+    model outputs.
+    """
+    messages = [
+        {"role": "system", "content": TRIP_PLANNER_JSON_PROMPT},
+        {"role": "user",   "content": prefs_to_json_prompt(prefs)},
+    ]
     with contextlib.redirect_stderr(io.StringIO()):
-        trip_data = parse_trip(text, api_key=API_KEY)
+        trip_data = _groq_json(messages)
         geocode_trip(trip_data)
         calculate_routes(trip_data)
         fetch_wiki_images(trip_data)
@@ -393,23 +406,22 @@ def _q(label: str) -> str:
     return f'<span style="color:#8b949e;font-size:0.82em;font-weight:600;letter-spacing:.4px;text-transform:uppercase">{label}</span>'
 
 
-def prefs_to_prompt(p: dict) -> str:
-    lines = ["Please generate a full detailed trip itinerary based on these preferences:\n"]
-    if p.get("destination"):
-        lines.append(f"Destination / region: {p['destination']}")
-    if p.get("trip_start_city"):
-        lines.append(f"Trip starts in: {p['trip_start_city']}")
+def prefs_to_json_prompt(p: dict) -> str:
+    """Build the user-turn prompt from form preferences."""
+    lines = ["Generate a complete trip itinerary as JSON matching the schema exactly.\n"]
+    lines.append(f"Destination / region: {p['destination']}")
+    lines.append(f"Trip starts in: {p['trip_start_city']}")
     if p.get("trip_end_city"):
-        lines.append(f"Trip ends in: {p['trip_end_city']} (one-way — do NOT return to start)")
+        lines.append(f"Trip ends in: {p['trip_end_city']} (one-way — do NOT loop back to start)")
     else:
-        lines.append("Trip routing: round trip — the last day should return to the starting city")
+        lines.append("Trip routing: round trip — last day returns to the starting city")
     month = p.get("month", "")
     if "flexible" not in month.lower():
         timing = month
         if p.get("year", "Flexible") != "Flexible":
             timing += f" {p['year']}"
         lines.append(f"Travel timing: {timing}")
-    lines.append(f"Duration: {p['duration']} days")
+    lines.append(f"Duration: exactly {p['duration']} days")
     lines.append(f"Group: {p['group_size']} — {p['group_type']}")
     if p.get("trip_type"):
         lines.append(f"Trip focus: {', '.join(p['trip_type'])}")
@@ -431,15 +443,15 @@ def prefs_to_prompt(p: dict) -> str:
     if p.get("special"):
         lines.append(f"Special requirements: {p['special']}")
     lines.append(
-        "\nGenerate the full itinerary now — no clarifying questions. "
-        "Use Day-by-Day sections, real geocodable place names, hotel check-in/check-out days."
+        "\nReturn ONLY the JSON object — no explanation, no markdown. "
+        "Every address must include city and country for reliable map geocoding."
     )
     return "\n".join(lines)
 
 
 def reset_planner() -> None:
     st.session_state.plan_stage = "form"
-    for k in ("plan_itinerary", "plan_map_html", "plan_trip_data"):
+    for k in ("plan_prefs", "plan_map_html", "plan_trip_data"):
         st.session_state.pop(k, None)
 
 
@@ -555,12 +567,15 @@ def render_structured_itinerary(trip_data: dict) -> None:
                 cuisine_html += "</div>"
 
             route_html = ""
-            if route:
+            if route and route.get("km", 0) >= 0.05:
                 km     = route["km"]
                 mins   = route["drive_mins"]
-                next_n = route.get("next_name", "next stop")
-                travel = (f"🚶 {round(km/0.08)} min walk" if km < 1.5
-                          else f"🚗 {mins} min")
+                raw_n  = route.get("next_name", "next stop")
+                next_n = raw_n[:33] + "…" if len(raw_n) > 35 else raw_n
+                if km < 1.5:
+                    travel = f"🚶 {max(round(km/0.08), 1)} min walk"
+                else:
+                    travel = f"🚗 {mins} min"
                 route_html = (
                     f'<div style="font-size:.78em;color:#64748B;margin-top:4px">'
                     f'→ {next_n}: {km} km · {travel}</div>'
@@ -918,7 +933,7 @@ if st.session_state.plan_stage == "form":
         elif not trip_start_city.strip():
             st.error("⚠️ Please enter the city where the trip starts (question 3).")
         else:
-            prefs = dict(
+            st.session_state.plan_prefs = dict(
                 destination=destination.strip(),
                 trip_start_city=trip_start_city.strip(),
                 trip_end_city=trip_end_city.strip(),
@@ -932,18 +947,11 @@ if st.session_state.plan_stage == "form":
                 food_prefs=food_prefs, dining_style=dining_style,
                 special=special,
             )
-            messages = [
-                {"role": "system", "content": NATURE_PLANNER_SYSTEM_PROMPT},
-                {"role": "user",   "content": prefs_to_prompt(prefs)},
-            ]
-            with st.spinner("🧭  Creating your personalised itinerary…"):
-                itinerary = groq_chat(messages, max_tokens=4096)
-            st.session_state.plan_itinerary = itinerary
-            st.session_state.plan_stage = "itinerary"
+            st.session_state.plan_stage = "building"
             st.rerun()
 
-# ── STAGE: itinerary — mountain animation while map builds ────────────────
-elif st.session_state.plan_stage == "itinerary":
+# ── STAGE: building — animation plays while single LLM call runs ─────────
+elif st.session_state.plan_stage == "building":
 
     col_title, col_btn = st.columns([5, 1])
     with col_title:
@@ -952,110 +960,178 @@ elif st.session_state.plan_stage == "itinerary":
             unsafe_allow_html=True,
         )
     with col_btn:
-        if st.button("🔄 Start over", key="so_itin"):
+        if st.button("🔄 Start over", key="so_bld"):
             reset_planner(); st.rerun()
 
     st.markdown("""
 <style>
-@keyframes hike {
-    0%   { transform: translateX(-70px); }
-    100% { transform: translateX(1400px); }
-}
-@keyframes twinkle {
-    0%, 100% { opacity: .12; transform: scale(.7); }
-    50%       { opacity: 1;   transform: scale(1.3); }
-}
-@keyframes cloud-drift {
-    0%   { transform: translateX(-160px); }
-    100% { transform: translateX(1600px); }
-}
 @keyframes dot-bounce {
-    0%, 80%, 100% { transform: translateY(0);     opacity: .35; }
-    40%            { transform: translateY(-9px);  opacity: 1;   }
+    0%, 80%, 100% { transform: translateY(0); opacity: .35; }
+    40%            { transform: translateY(-8px); opacity: 1; }
 }
 </style>
-<div style="position:relative;background:linear-gradient(180deg,#020810 0%,#07132E 45%,#0C1E40 100%);
-    border-radius:16px;overflow:hidden;height:290px;border:1px solid #1F3D5C;margin-bottom:1.2rem;">
-
-  <!-- stars -->
-  <div style="position:absolute;width:3px;height:3px;background:#fff;border-radius:50%;top:7%;left:11%;animation:twinkle 2.3s ease-in-out infinite 0s"></div>
-  <div style="position:absolute;width:2px;height:2px;background:#fff;border-radius:50%;top:14%;left:26%;animation:twinkle 1.9s ease-in-out infinite .5s"></div>
-  <div style="position:absolute;width:3px;height:3px;background:#fff;border-radius:50%;top:5%;left:43%;animation:twinkle 2.7s ease-in-out infinite 1.0s"></div>
-  <div style="position:absolute;width:2px;height:2px;background:#fff;border-radius:50%;top:19%;left:57%;animation:twinkle 2.1s ease-in-out infinite 1.3s"></div>
-  <div style="position:absolute;width:3px;height:3px;background:#fff;border-radius:50%;top:8%;left:71%;animation:twinkle 2.5s ease-in-out infinite .2s"></div>
-  <div style="position:absolute;width:2px;height:2px;background:#fff;border-radius:50%;top:4%;left:85%;animation:twinkle 1.8s ease-in-out infinite .8s"></div>
-  <div style="position:absolute;width:3px;height:3px;background:#fff;border-radius:50%;top:16%;left:94%;animation:twinkle 2.2s ease-in-out infinite 1.6s"></div>
-  <div style="position:absolute;width:2px;height:2px;background:#fff;border-radius:50%;top:11%;left:37%;animation:twinkle 2.0s ease-in-out infinite 0.3s"></div>
-
-  <!-- clouds -->
-  <div style="position:absolute;top:24px;width:100px;height:22px;background:rgba(255,255,255,.05);border-radius:20px;animation:cloud-drift 22s linear infinite 0s"></div>
-  <div style="position:absolute;top:44px;width:70px;height:16px;background:rgba(255,255,255,.035);border-radius:20px;animation:cloud-drift 30s linear infinite 6s"></div>
-
-  <!-- back mountains -->
-  <div style="position:absolute;bottom:68px;left:-30px;width:0;height:0;
-    border-left:170px solid transparent;border-right:170px solid transparent;
-    border-bottom:210px solid #0C2348;"></div>
-  <div style="position:absolute;bottom:68px;left:200px;width:0;height:0;
-    border-left:210px solid transparent;border-right:210px solid transparent;
-    border-bottom:250px solid #0A1F40;"></div>
-  <div style="position:absolute;bottom:68px;right:-50px;width:0;height:0;
-    border-left:190px solid transparent;border-right:190px solid transparent;
-    border-bottom:220px solid #0C2348;"></div>
-  <div style="position:absolute;bottom:68px;right:230px;width:0;height:0;
-    border-left:150px solid transparent;border-right:150px solid transparent;
-    border-bottom:180px solid #091D3C;"></div>
-
-  <!-- front mountains -->
-  <div style="position:absolute;bottom:60px;left:50px;width:0;height:0;
-    border-left:140px solid transparent;border-right:140px solid transparent;
-    border-bottom:170px solid #060F1F;"></div>
-  <div style="position:absolute;bottom:60px;right:70px;width:0;height:0;
-    border-left:160px solid transparent;border-right:160px solid transparent;
-    border-bottom:190px solid #050D1D;"></div>
-
-  <!-- ground -->
-  <div style="position:absolute;bottom:0;left:0;right:0;height:62px;background:#030A18;border-top:1px solid #0D2040;"></div>
-
-  <!-- trail -->
-  <div style="position:absolute;bottom:60px;left:0;right:0;height:1px;
-    background:linear-gradient(90deg,transparent 0%,rgba(56,189,248,.15) 20%,rgba(56,189,248,.15) 80%,transparent 100%);"></div>
-
-  <!-- hiker -->
-  <div style="position:absolute;bottom:57px;left:0;animation:hike 10s linear infinite;">
-    <svg width="26" height="42" viewBox="0 0 26 42" fill="none" xmlns="http://www.w3.org/2000/svg">
-      <circle cx="13" cy="5" r="3.8" fill="#94BDDB"/>
-      <line x1="13" y1="9" x2="13" y2="23" stroke="#94BDDB" stroke-width="2.2" stroke-linecap="round"/>
-      <line x1="13" y1="13" x2="4" y2="20" stroke="#94BDDB" stroke-width="2" stroke-linecap="round"/>
-      <line x1="4" y1="20" x2="3" y2="30" stroke="#7FA8C0" stroke-width="1.6" stroke-linecap="round"/>
-      <line x1="13" y1="13" x2="21" y2="18" stroke="#94BDDB" stroke-width="2" stroke-linecap="round"/>
-      <line x1="13" y1="23" x2="7"  y2="34" stroke="#94BDDB" stroke-width="2.2" stroke-linecap="round"/>
-      <line x1="7"  y1="34" x2="4"  y2="41" stroke="#94BDDB" stroke-width="2" stroke-linecap="round"/>
-      <line x1="13" y1="23" x2="19" y2="33" stroke="#94BDDB" stroke-width="2.2" stroke-linecap="round"/>
-      <line x1="19" y1="33" x2="23" y2="41" stroke="#94BDDB" stroke-width="2" stroke-linecap="round"/>
-    </svg>
+<div style="border:1px solid #1F3D5C;border-radius:16px;overflow:hidden;margin-bottom:1.2rem;">
+<svg viewBox="0 0 900 260" xmlns="http://www.w3.org/2000/svg"
+     xmlns:xlink="http://www.w3.org/1999/xlink"
+     style="display:block;width:100%">
+  <defs>
+    <linearGradient id="asky" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#020810"/>
+      <stop offset="55%" stop-color="#07132E"/>
+      <stop offset="100%" stop-color="#0D2040"/>
+    </linearGradient>
+    <radialGradient id="agl1" cx="20%" cy="0%" r="55%">
+      <stop offset="0%" stop-color="#0EA5E9" stop-opacity="0.09"/>
+      <stop offset="100%" stop-color="#0EA5E9" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="agl2" cx="80%" cy="5%" r="45%">
+      <stop offset="0%" stop-color="#10B981" stop-opacity="0.06"/>
+      <stop offset="100%" stop-color="#10B981" stop-opacity="0"/>
+    </radialGradient>
+    <filter id="aLineGlow" x="-30%" y="-200%" width="160%" height="500%">
+      <feGaussianBlur in="SourceGraphic" stdDeviation="3.5" result="b"/>
+      <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+    <filter id="aPlaneGlow" x="-80%" y="-80%" width="260%" height="260%">
+      <feGaussianBlur in="SourceGraphic" stdDeviation="4" result="b"/>
+      <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+    <filter id="aDotGlow" x="-80%" y="-80%" width="260%" height="260%">
+      <feGaussianBlur in="SourceGraphic" stdDeviation="2.5" result="b"/>
+      <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+    <clipPath id="aClip"><rect width="900" height="260"/></clipPath>
+  </defs>
+  <g clip-path="url(#aClip)">
+    <rect width="900" height="260" fill="url(#asky)"/>
+    <rect width="900" height="260" fill="url(#agl1)"/>
+    <rect width="900" height="260" fill="url(#agl2)"/>
+    <g stroke="#0EA5E9" stroke-opacity="0.035" stroke-width="1">
+      <line x1="0" y1="65" x2="900" y2="65"/><line x1="0" y1="130" x2="900" y2="130"/>
+      <line x1="0" y1="195" x2="900" y2="195"/><line x1="225" y1="0" x2="225" y2="260"/>
+      <line x1="450" y1="0" x2="450" y2="260"/><line x1="675" y1="0" x2="675" y2="260"/>
+    </g>
+    <!-- twinkling stars -->
+    <circle cx="75"  cy="22" r="1.6" fill="#fff"><animate attributeName="opacity" values="0.12;1;0.12"   dur="2.3s" repeatCount="indefinite" begin="0s"/></circle>
+    <circle cx="185" cy="38" r="1.2" fill="#fff"><animate attributeName="opacity" values="0.12;0.9;0.12" dur="1.9s" repeatCount="indefinite" begin="0.5s"/></circle>
+    <circle cx="320" cy="16" r="1.8" fill="#fff"><animate attributeName="opacity" values="0.15;1;0.15"   dur="2.7s" repeatCount="indefinite" begin="1.0s"/></circle>
+    <circle cx="445" cy="28" r="1.3" fill="#fff"><animate attributeName="opacity" values="0.12;0.85;0.12" dur="2.1s" repeatCount="indefinite" begin="1.3s"/></circle>
+    <circle cx="582" cy="14" r="1.5" fill="#fff"><animate attributeName="opacity" values="0.12;1;0.12"   dur="2.5s" repeatCount="indefinite" begin="0.2s"/></circle>
+    <circle cx="685" cy="32" r="1.1" fill="#fff"><animate attributeName="opacity" values="0.1;0.8;0.1"   dur="1.8s" repeatCount="indefinite" begin="0.8s"/></circle>
+    <circle cx="778" cy="19" r="1.5" fill="#fff"><animate attributeName="opacity" values="0.12;1;0.12"   dur="2.2s" repeatCount="indefinite" begin="1.6s"/></circle>
+    <circle cx="848" cy="44" r="1.2" fill="#fff"><animate attributeName="opacity" values="0.12;0.9;0.12" dur="2.0s" repeatCount="indefinite" begin="0.3s"/></circle>
+    <g fill="#fff">
+      <circle cx="128" cy="52" r="0.7" opacity="0.3"/><circle cx="262" cy="48" r="0.6" opacity="0.28"/>
+      <circle cx="395" cy="40" r="0.7" opacity="0.35"/><circle cx="518" cy="52" r="0.6" opacity="0.28"/>
+      <circle cx="722" cy="54" r="0.7" opacity="0.3"/><circle cx="823" cy="36" r="0.6" opacity="0.28"/>
+    </g>
+    <!-- mountains back -->
+    <g fill="#0C2040">
+      <polygon points="-10,260 110,155 240,260"/>
+      <polygon points="170,260 315,122 470,260"/>
+      <polygon points="400,260 548,138 710,260"/>
+      <polygon points="630,260 778,146 910,260"/>
+    </g>
+    <g fill="#1C3F68" opacity="0.55">
+      <polygon points="310,122 315,122 310,110 305,122"/>
+      <polygon points="543,138 548,138 543,125 538,138"/>
+    </g>
+    <!-- mountains front -->
+    <g fill="#060E1C">
+      <polygon points="-10,260 85,185 195,260"/>
+      <polygon points="125,260 248,162 382,260"/>
+      <polygon points="312,260 448,168 582,260"/>
+      <polygon points="508,260 648,158 792,260"/>
+      <polygon points="700,260 822,173 910,260"/>
+    </g>
+    <!-- flight path reference -->
+    <path id="afp" d="M 100,210 C 220,82 580,46 800,198" fill="none"/>
+    <!-- dashed background route -->
+    <path d="M 100,210 C 220,82 580,46 800,198" fill="none" stroke="#1A3A5A" stroke-width="1.5" stroke-dasharray="5 4"/>
+    <!-- animated route draw -->
+    <path d="M 100,210 C 220,82 580,46 800,198" fill="none" stroke="#38BDF8" stroke-width="2.5"
+          stroke-opacity="0.9" stroke-dasharray="1050" stroke-dashoffset="1050" filter="url(#aLineGlow)">
+      <animate attributeName="stroke-dashoffset" from="1050" to="0" dur="5s" repeatCount="indefinite"
+               calcMode="spline" keyTimes="0;1" keySplines="0.3 0 0.7 1"/>
+    </path>
+    <!-- origin -->
+    <circle cx="100" cy="210" r="8" fill="none" stroke="#38BDF8" stroke-width="1.5">
+      <animate attributeName="r" values="8;24;8" dur="2.8s" repeatCount="indefinite" begin="0s"/>
+      <animate attributeName="opacity" values="0.7;0;0.7" dur="2.8s" repeatCount="indefinite" begin="0s"/>
+    </circle>
+    <circle cx="100" cy="210" r="7" fill="#0B5E8A" filter="url(#aDotGlow)"/>
+    <circle cx="100" cy="210" r="4.5" fill="#38BDF8"/><circle cx="100" cy="210" r="2" fill="#F0F9FF"/>
+    <text x="100" y="232" text-anchor="middle" fill="#3A5A78" font-size="9.5" font-family="Arial,sans-serif" font-weight="600" letter-spacing="1">ORIGIN</text>
+    <!-- destination -->
+    <circle cx="800" cy="198" r="8" fill="none" stroke="#38BDF8" stroke-width="1.5">
+      <animate attributeName="r" values="8;24;8" dur="2.8s" repeatCount="indefinite" begin="1.3s"/>
+      <animate attributeName="opacity" values="0.7;0;0.7" dur="2.8s" repeatCount="indefinite" begin="1.3s"/>
+    </circle>
+    <circle cx="800" cy="198" r="7" fill="#0B5E8A" filter="url(#aDotGlow)"/>
+    <circle cx="800" cy="198" r="4.5" fill="#38BDF8"/><circle cx="800" cy="198" r="2" fill="#F0F9FF"/>
+    <text x="800" y="220" text-anchor="middle" fill="#3A5A78" font-size="9.5" font-family="Arial,sans-serif" font-weight="600" letter-spacing="1">DESTINATION</text>
+    <!-- waypoint 1 (~t=0.30) -->
+    <g><animate attributeName="opacity" values="0;0;0.9;0.9" keyTimes="0;0.24;0.34;1" dur="5s" repeatCount="indefinite"/>
+      <circle cx="263" cy="122" r="6" fill="#0A4E74" filter="url(#aDotGlow)"/>
+      <circle cx="263" cy="122" r="4" fill="#38BDF8"/><circle cx="263" cy="122" r="1.7" fill="#F0F9FF"/>
+      <circle cx="263" cy="122" r="6" fill="none" stroke="#38BDF8" stroke-width="1.2">
+        <animate attributeName="r" values="6;18;6" dur="2s" repeatCount="indefinite"/>
+        <animate attributeName="opacity" values="0.6;0;0.6" dur="2s" repeatCount="indefinite"/>
+      </circle>
+    </g>
+    <!-- waypoint 2 (~t=0.63) -->
+    <g><animate attributeName="opacity" values="0;0;0.9;0.9" keyTimes="0;0.57;0.67;1" dur="5s" repeatCount="indefinite"/>
+      <circle cx="527" cy="102" r="6" fill="#0A4E74" filter="url(#aDotGlow)"/>
+      <circle cx="527" cy="102" r="4" fill="#38BDF8"/><circle cx="527" cy="102" r="1.7" fill="#F0F9FF"/>
+      <circle cx="527" cy="102" r="6" fill="none" stroke="#38BDF8" stroke-width="1.2">
+        <animate attributeName="r" values="6;18;6" dur="2s" repeatCount="indefinite" begin="0.5s"/>
+        <animate attributeName="opacity" values="0.6;0;0.6" dur="2s" repeatCount="indefinite" begin="0.5s"/>
+      </circle>
+    </g>
+    <!-- plane trail dots -->
+    <g opacity="0.45"><animateMotion dur="5s" repeatCount="indefinite" rotate="auto" calcMode="spline" keyTimes="0;1" keySplines="0.3 0 0.7 1" begin="-0.25s"><mpath xlink:href="#afp"/></animateMotion><circle r="2.2" fill="#38BDF8"/></g>
+    <g opacity="0.25"><animateMotion dur="5s" repeatCount="indefinite" rotate="auto" calcMode="spline" keyTimes="0;1" keySplines="0.3 0 0.7 1" begin="-0.5s"><mpath xlink:href="#afp"/></animateMotion><circle r="1.5" fill="#38BDF8"/></g>
+    <g opacity="0.12"><animateMotion dur="5s" repeatCount="indefinite" rotate="auto" calcMode="spline" keyTimes="0;1" keySplines="0.3 0 0.7 1" begin="-0.75s"><mpath xlink:href="#afp"/></animateMotion><circle r="1" fill="#38BDF8"/></g>
+    <!-- airplane -->
+    <g filter="url(#aPlaneGlow)">
+      <animateMotion dur="5s" repeatCount="indefinite" rotate="auto" calcMode="spline" keyTimes="0;1" keySplines="0.3 0 0.7 1">
+        <mpath xlink:href="#afp"/>
+      </animateMotion>
+      <g transform="scale(1.15)">
+        <path d="M 16,0 L -10,-2.5 L -14,0 L -10,2.5 Z" fill="#7DD3FC"/>
+        <path d="M 4,-2.5 L -1,-17 L -9,-2.5 Z" fill="#93C5FD"/>
+        <path d="M -8,-2.5 L -10,-9 L -14,-2.5 Z" fill="#93C5FD"/>
+        <path d="M -9,2.5 L -7,7 L -14,2.5 Z" fill="#7DD3FC" opacity="0.8"/>
+        <ellipse cx="9" cy="-0.5" rx="2.2" ry="1.4" fill="#38BDF8" opacity="0.5"/>
+        <circle cx="-3" cy="0" r="1.5" fill="#38BDF8" opacity="0.7"/>
+      </g>
+    </g>
+  </g>
+</svg>
+<div style="background:#030D1E;padding:14px;text-align:center;border-top:1px solid #0F2A45;">
+  <div style="color:#64748B;font-size:.82em;font-weight:500;letter-spacing:.5px;margin-bottom:10px;">
+    Planning &amp; building your interactive map…
   </div>
-
-  <!-- label -->
-  <div style="position:absolute;bottom:10px;left:0;right:0;text-align:center;">
-    <div style="color:#64748B;font-size:.82em;font-weight:500;letter-spacing:.5px;margin-bottom:9px;">
-      Building your interactive map
-    </div>
-    <div style="display:inline-flex;gap:8px;align-items:center;">
-      <div style="width:7px;height:7px;background:#38BDF8;border-radius:50%;animation:dot-bounce 1.4s ease-in-out infinite 0s"></div>
-      <div style="width:7px;height:7px;background:#38BDF8;border-radius:50%;animation:dot-bounce 1.4s ease-in-out infinite .22s"></div>
-      <div style="width:7px;height:7px;background:#38BDF8;border-radius:50%;animation:dot-bounce 1.4s ease-in-out infinite .44s"></div>
-    </div>
+  <div style="display:inline-flex;gap:8px;align-items:center;">
+    <div style="width:7px;height:7px;background:#38BDF8;border-radius:50%;animation:dot-bounce 1.4s ease-in-out infinite 0s"></div>
+    <div style="width:7px;height:7px;background:#38BDF8;border-radius:50%;animation:dot-bounce 1.4s ease-in-out infinite .22s"></div>
+    <div style="width:7px;height:7px;background:#38BDF8;border-radius:50%;animation:dot-bounce 1.4s ease-in-out infinite .44s"></div>
   </div>
+</div>
 </div>
 """, unsafe_allow_html=True)
 
     try:
-        map_html, trip_data = build_map_html(st.session_state.plan_itinerary)
+        map_html, trip_data = generate_and_build(st.session_state.plan_prefs)
         st.session_state.plan_map_html = map_html
         st.session_state.plan_trip_data = trip_data
         st.session_state.plan_stage = "done"
+    except json.JSONDecodeError as e:
+        st.error(f"The AI returned invalid JSON — please try again. ({e})")
+        st.session_state.plan_stage = "form"
     except (Exception, SystemExit) as e:
         st.error(f"Map build failed: {e}")
+        st.session_state.plan_stage = "form"
 
     if st.session_state.plan_stage == "done":
         st.rerun()
