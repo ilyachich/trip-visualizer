@@ -20,6 +20,7 @@ streamlit run app.py
 - At least 5 locations per day guaranteed: hotel + activities + restaurants + sights
 - Day 1 always includes arrival city attractions so it appears on the map from the start
 - Hiking trips get full trail details: distance, elevation gain, difficulty and an AllTrails search link
+- Drive-time limit is enforced as a concrete km budget per day; a warning banner appears if any day exceeds your chosen limit
 - An animated SVG airplane flies across the screen while the map is built
 - Get a colour-coded interactive map + structured itinerary ready to download
 
@@ -39,7 +40,7 @@ python trip_visualizer.py my_trip.txt -o paris.html --json-output parsed.json
 
 ## What the map includes
 
-- **Per-day colour-coded routes** — numbered stops (1, 2, 3… reset each day) with direction arrows
+- **Per-day colour-coded routes** — numbered stops (1, 2, 3… reset each day) with direction arrows; numbers shown in SVG circles that are always readable regardless of theme
 - **Hotel-first routing** — each day starts at the overnight hotel (🌙), then visits attractions in order
 - **Typed markers** — 🏨 hotels, 🍴 restaurants, 🎯 activities, 🏛️ sights, ✈️ airports, 🚂 trains, 🚌 buses, 🚇 metro, 🚢 ships
 - **Accommodation layer** — hotel badge markers with stars, check-in/out days (offset to avoid overlap)
@@ -67,6 +68,22 @@ When the trip type includes hiking or trekking, the AI generates:
 | Trail link | 🥾 AllTrails ↗ (opens search for that trail) |
 
 These appear in the map popup, the in-map itinerary panel, and the Streamlit itinerary.
+
+---
+
+## Drive-time enforcement
+
+The max driving per day preference is converted to a concrete km range before being sent to the AI (using a 45 km/h mountain-road average speed):
+
+| Form option | Sent to AI |
+|---|---|
+| Under 30 minutes | ~20 km max between first and last stop |
+| 30–60 minutes | ~30–50 km between stops |
+| 1–1.5 hours | ~50–80 km between stops |
+| 1.5–2 hours | ~80–110 km between stops |
+| 2+ hours | no strict cap |
+
+After OSRM routing, the app checks actual driving totals. If any day exceeds your limit a **yellow warning banner** appears so you can choose to regenerate.
 
 ---
 
@@ -131,8 +148,8 @@ Open a new terminal after running `setx` on Windows.
 
 ## How it works
 
-1. **Plan** *(web app only)* — a single Groq call turns your 20-question form into structured JSON with at least 5 locations per day; hiking entries include trail stats
-2. **Geocode** — each place is resolved to coordinates using a 5-level fallback chain: full address with country → full address without country filter → name + country → city + country → bare name with type words stripped. If all attempts fail the pin is placed at city level so every planned stop always appears on the map
+1. **Plan** *(web app only)* — a single Groq call turns your 20-question form into structured JSON with at least 5 locations per day; hiking entries include trail stats; drive-time limit is sent as a concrete km budget
+2. **Geocode** — each place is resolved to coordinates using a 6-level fallback chain: full address + country → full address without country → name + country → city + country → core name with noise words stripped → diacritics removed. If all attempts fail the pin is placed at the trip region so every planned stop always appears on the map. Markers that share identical coordinates are scattered by ~120 m so all remain individually clickable
 3. **Route** — OSRM calculates driving distance and time between consecutive stops each day
 4. **Images** — Wikipedia search API finds thumbnails for each location
 5. **Render** — Folium builds an interactive Leaflet.js map saved as a self-contained HTML file that works offline in any browser
