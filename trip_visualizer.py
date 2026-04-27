@@ -32,6 +32,7 @@ import os
 import re
 import sys
 import time
+import unicodedata
 import urllib.parse
 from pathlib import Path
 
@@ -480,17 +481,30 @@ def geocode(
     if not result and len(parts) >= 2:
         result = _nominatim(f"{parts[-2]}, {parts[-1]}", countrycode, headers)
 
-    # Attempt 5: bare place name only (strip leading type words like "Restaurant", "Hotel")
+    # Attempt 5: strip common type/descriptor words, keep the core name + country
     if not result and parts:
-        _TYPE_WORDS = {"restaurant", "hotel", "hostel", "guesthouse", "museum",
-                       "church", "temple", "palace", "castle", "park", "garden",
-                       "airport", "station", "terminal", "market", "cafe", "bar"}
+        _NOISE = {"restaurant", "hotel", "hostel", "guesthouse", "museum",
+                  "church", "temple", "palace", "castle", "park", "garden",
+                  "airport", "station", "terminal", "market", "cafe", "bar",
+                  "national", "nature", "reserve", "trail", "route", "path",
+                  "waterfall", "falls", "lake", "mount", "mountain", "peak",
+                  "viewpoint", "lookout", "center", "centre", "complex", "resort",
+                  "ski", "hut", "refuge", "lodge", "inn", "spa", "beach", "bay"}
         name_words = parts[0].split()
-        stripped   = " ".join(
-            w for w in name_words if w.lower() not in _TYPE_WORDS
-        ).strip()
+        stripped   = " ".join(w for w in name_words if w.lower() not in _NOISE).strip()
         if stripped and stripped != parts[0]:
-            result = _nominatim(stripped, countrycode, headers)
+            # Try stripped name + country for context
+            q = f"{stripped}, {parts[-1]}" if len(parts) >= 2 else stripped
+            result = _nominatim(q, countrycode, headers)
+
+    # Attempt 6: strip diacritics / accents (helps when LLM uses slightly wrong spelling)
+    if not result:
+        ascii_addr = "".join(
+            c for c in unicodedata.normalize("NFD", address)
+            if unicodedata.category(c) != "Mn"
+        )
+        if ascii_addr != address:
+            result = _nominatim(ascii_addr, countrycode, headers)
 
     cache[cache_key] = result
     if not result:
@@ -516,6 +530,25 @@ def _city_country_fallback(address: str, name: str, countrycode: str | None,
     return None
 
 
+def _region_fallback(data: dict, cache: dict, countrycode: str | None,
+                     label: str) -> tuple[float, float] | None:
+    """Absolute last resort: geocode the trip's region or country."""
+    country_name = data.get("country", "")
+    region       = data.get("region", "")
+    for q in [
+        f"{region}, {country_name}" if region and country_name else None,
+        region if region else None,
+        country_name if country_name else None,
+    ]:
+        if not q:
+            continue
+        r = geocode(q, cache, countrycode)
+        if r:
+            print(f"    ↳ trip-region pin for '{label}'", file=sys.stderr)
+            return r
+    return None
+
+
 def geocode_trip(data: dict) -> dict[str, tuple | None]:
     """Geocode every address in the trip data; return filled cache."""
     cache: dict[str, tuple | None] = {}
@@ -526,30 +559,39 @@ def geocode_trip(data: dict) -> dict[str, tuple | None]:
     for day in data.get("days", []):
         for loc in day.get("locations", []):
             addr = loc.get("address") or loc["name"]
+            name = loc.get("name", "")
             print(f"  {addr}", file=sys.stderr)
             coords = geocode(addr, cache, countrycode)
-            # If full address failed, try bare name then city-level fallback
-            if coords is None:
-                name = loc.get("name", "")
-                if name and name != addr:
-                    coords = geocode(name, cache, countrycode)
-                if coords is None and loc.get("address"):
-                    coords = _city_country_fallback(
-                        loc["address"], name, countrycode, cache, headers
-                    )
+
+            if coords is None and name and name != addr:
+                # Try bare place name (no address context)
+                coords = geocode(name, cache, countrycode)
+
+            if coords is None and loc.get("address"):
+                # City-level fallback
+                coords = _city_country_fallback(
+                    loc["address"], name, countrycode, cache, headers
+                )
                 if coords:
-                    print(f"    ↳ approximate pin placed for '{name}'", file=sys.stderr)
+                    print(f"    ↳ city-level pin for '{name}'", file=sys.stderr)
+
+            if coords is None:
+                # Absolute last resort — place pin at trip region
+                coords = _region_fallback(data, cache, countrycode, name)
+
             loc["_coords"] = coords
 
     for acc in data.get("accommodations", []):
         addr = acc.get("address") or acc["name"]
+        name = acc.get("name", "")
         print(f"  {addr}  (accommodation)", file=sys.stderr)
         coords = geocode(addr, cache, countrycode)
         if coords is None and acc.get("address"):
-            name = acc.get("name", "")
             coords = _city_country_fallback(
                 acc["address"], name, countrycode, cache, headers
             )
+        if coords is None:
+            coords = _region_fallback(data, cache, countrycode, name)
         acc["_coords"] = coords
 
     return cache

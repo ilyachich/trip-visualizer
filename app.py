@@ -555,11 +555,16 @@ def render_structured_itinerary(trip_data: dict) -> None:
             is_hotel = loc_type == "hotel"
             if not is_hotel:
                 stop_num += 1
+                # Inline SVG so CSS `color:!important` can't override the fill
+                _fs = "10" if stop_num < 10 else "8"
                 badge = (
-                    f'<span style="background:white;color:{color};'
-                    f'border:2px solid {color};border-radius:50%;'
-                    f'padding:1px 5px;font-size:.72em;font-weight:700;'
-                    f'margin-right:5px;vertical-align:middle">{stop_num}</span>'
+                    f'<svg width="22" height="22" viewBox="0 0 22 22" '
+                    f'xmlns="http://www.w3.org/2000/svg" '
+                    f'style="vertical-align:middle;margin-right:5px;flex-shrink:0">'
+                    f'<circle cx="11" cy="11" r="10" fill="white" stroke="{color}" stroke-width="2.5"/>'
+                    f'<text x="11" y="15" text-anchor="middle" fill="{color}" '
+                    f'font-size="{_fs}" font-weight="bold" font-family="Arial,sans-serif">{stop_num}</text>'
+                    f'</svg>'
                 )
             else:
                 badge = ""
